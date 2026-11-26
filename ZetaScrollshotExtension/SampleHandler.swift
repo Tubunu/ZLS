@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 import ReplayKit
 import AudioToolbox
 import CoreMedia

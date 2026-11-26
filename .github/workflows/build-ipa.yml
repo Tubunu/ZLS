@@ -42,7 +42,8 @@ jobs:
             -project ZetaStitch.xcodeproj \
             -scheme ZetaStitch \
             -destination "id=$SIM_UDID" \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO
 
       - name: Build unsigned IPA (for TrollStore / Esign / Sideloadly)
         run: |

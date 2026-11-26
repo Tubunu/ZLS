@@ -43,7 +43,7 @@ public struct OverlapResult: Equatable, Sendable {
     }
 }
 
-public final class OverlapDetector {
+public final class OverlapDetector: @unchecked Sendable {
     private let config: OverlapDetectionConfig
 
     public init(config: OverlapDetectionConfig = OverlapDetectionConfig()) {
