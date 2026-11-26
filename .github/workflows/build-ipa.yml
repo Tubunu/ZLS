@@ -35,19 +35,37 @@ jobs:
       - name: Run unit tests on iOS Simulator
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_tests }}
         run: |
+          set -o pipefail
+          mkdir -p build/logs
           SIM_UDID=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin); print(next((dev['udid'] for rt,devs in sorted(d.get('devices',{}).items(), reverse=True) if 'iOS' in rt for dev in devs if dev.get('isAvailable') and 'iPhone' in dev.get('name','')), ''))")
           echo "Using Simulator UDID: $SIM_UDID"
           test -n "$SIM_UDID"
+          set +e
           xcodebuild test \
             -project ZetaStitch.xcodeproj \
             -scheme ZetaStitch \
             -destination "id=$SIM_UDID" \
+            CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="-" \
-            CODE_SIGNING_REQUIRED=NO
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_ENTITLEMENTS="" 2>&1 | tee build/logs/test.log
+          STATUS=${PIPESTATUS[0]}
+          set -e
+          if [ "$STATUS" -ne 0 ]; then
+            grep -E "error:|fatal error:|Testing failed:|TEST FAILED|BUILD FAILED|requires a development team" build/logs/test.log | head -n 25 | while IFS= read -r line; do
+              echo "::error::[test] $line"
+            done
+            tail -n 30 build/logs/test.log | while IFS= read -r line; do
+              echo "::warning::[test-tail] $line"
+            done
+            exit "$STATUS"
+          fi
 
       - name: Build unsigned IPA (for TrollStore / Esign / Sideloadly)
         run: |
-          rm -rf build
+          set -o pipefail
+          mkdir -p build/logs
+          set +e
           xcodebuild build \
             -project ZetaStitch.xcodeproj \
             -scheme ZetaStitch \
@@ -59,7 +77,15 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_STYLE=Manual \
             CODE_SIGN_IDENTITY="" \
-            DEVELOPMENT_TEAM=""
+            DEVELOPMENT_TEAM="" 2>&1 | tee build/logs/build-unsigned.log
+          STATUS=${PIPESTATUS[0]}
+          set -e
+          if [ "$STATUS" -ne 0 ]; then
+            grep -E "error:|fatal error:|BUILD FAILED" build/logs/build-unsigned.log | head -n 25 | while IFS= read -r line; do
+              echo "::error::[build] $line"
+            done
+            exit "$STATUS"
+          fi
 
           APP_PATH="build/DerivedData/Build/Products/Release-iphoneos/ZetaStitch.app"
           test -d "$APP_PATH"
@@ -164,3 +190,10 @@ jobs:
         with:
           name: ZetaStitch-signed-ipa
           path: build/ZetaStitch-signed.ipa
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-logs
+          path: build/logs/
