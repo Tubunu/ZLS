@@ -40,7 +40,7 @@ A clean, ad-free, paywall-free native iOS long-screenshot & scrollshot app recon
 
 ## GitHub Actions Cloud IPA Build
 
-This repository includes [.github/workflows/build-ipa.yml](.github/workflows/build-ipa.yml) running on `macos-15`:
+This repository includes [.github/workflows/build-ipa.yml](.github/workflows/build-ipa.yml) running on `macos-15-intel`:
 
 - **Unsigned IPA (zero secrets required)**: Automatically runs `ZetaStitchTests`, compiles `ZetaStitch.app` + `ZetaScrollshotExtension.appex` + `default.metallib`, and uploads `ZetaStitch-unsigned.ipa` (for TrollStore / Esign / Sideloadly / self-signing) as a workflow artifact.
 - **Signed IPA (optional)**: Add repository secrets `APPLE_P12_BASE64`, `APPLE_P12_PASSWORD`, `APP_PROVISION_BASE64`, `EXT_PROVISION_BASE64`, and optional `EXPORT_METHOD` (`ad-hoc` / `development` / `app-store`) to also export `ZetaStitch-signed.ipa`.
