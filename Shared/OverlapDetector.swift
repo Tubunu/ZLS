@@ -263,62 +263,121 @@ public final class OverlapDetector: @unchecked Sendable {
 
         var headerRows = 0
         var lastTexturedHeader = 0
+        var headerRowMeans: [Double] = []
+        headerRowMeans.reserveCapacity(maxHeader)
+
         for y in 0..<maxHeader {
             let rowOff = y * stride
             var diff = 0
+            var rowSum = 0
             var prev = Int(top[rowOff + xStart])
             var rowGrad = 0
+            var minV = prev
+            var maxV = prev
             for x in xStart..<xEnd {
                 let tv = Int(top[rowOff + x])
                 let bv = Int(bot[rowOff + x])
                 diff += abs(tv - bv)
+                rowSum += tv
                 rowGrad += abs(tv - prev)
                 prev = tv
+                if tv < minV { minV = tv }
+                if tv > maxV { maxV = tv }
             }
             let mad = Double(diff) / Double(span)
             let meanGrad = Double(rowGrad) / Double(span)
+            let rowRange = maxV - minV
+            let rowMean = Double(rowSum) / Double(span)
             if mad <= 3.2 {
                 headerRows = y + 1
-                if meanGrad > 2.0 {
+                headerRowMeans.append(rowMean)
+                if meanGrad > 0.35 || rowRange >= 16 || (y > 0 && abs(rowMean - headerRowMeans[y - 1]) > 6.0) {
                     lastTexturedHeader = headerRows
                 }
             } else {
                 break
             }
         }
-        // Only trim header up to the last textured static element (e.g. status bar + fixed nav bar)
-        // plus 1px cushion so scrolled whitespace isn't swallowed as static chrome.
-        let finalHeader = lastTexturedHeader > 0 ? min(headerRows, lastTexturedHeader + 2) : 0
+        // Detect solid-color static bars whose bottom edge steps cleanly into diverging scrolled content.
+        if lastTexturedHeader == 0, headerRows > 0, headerRows < maxHeader {
+            let nextOff = headerRows * stride
+            var nextSum = 0
+            for x in xStart..<xEnd {
+                nextSum += Int(top[nextOff + x])
+            }
+            let nextMean = Double(nextSum) / Double(span)
+            if abs(nextMean - headerRowMeans[headerRows - 1]) > 10.0 {
+                lastTexturedHeader = headerRows
+            }
+        }
+        let finalHeader: Int
+        if lastTexturedHeader == 0 {
+            finalHeader = 0
+        } else if headerRows < maxHeader && (headerRows - lastTexturedHeader) <= 18 {
+            finalHeader = headerRows
+        } else {
+            finalHeader = min(headerRows, lastTexturedHeader + 4)
+        }
 
         var footerRows = 0
         var lastTexturedFooter = 0
+        var footerRowMeans: [Double] = []
+        footerRowMeans.reserveCapacity(maxFooter)
+
         for offset in 0..<maxFooter {
             let ty = topH - 1 - offset
             let by = botH - 1 - offset
             let tOff = ty * stride
             let bOff = by * stride
             var diff = 0
+            var rowSum = 0
             var prev = Int(top[tOff + xStart])
             var rowGrad = 0
+            var minV = prev
+            var maxV = prev
             for x in xStart..<xEnd {
                 let tv = Int(top[tOff + x])
                 let bv = Int(bot[bOff + x])
                 diff += abs(tv - bv)
+                rowSum += tv
                 rowGrad += abs(tv - prev)
                 prev = tv
+                if tv < minV { minV = tv }
+                if tv > maxV { maxV = tv }
             }
             let mad = Double(diff) / Double(span)
             let meanGrad = Double(rowGrad) / Double(span)
+            let rowRange = maxV - minV
+            let rowMean = Double(rowSum) / Double(span)
             if mad <= 3.2 {
                 footerRows = offset + 1
-                if meanGrad > 2.0 {
+                footerRowMeans.append(rowMean)
+                if meanGrad > 0.35 || rowRange >= 16 || (offset > 0 && abs(rowMean - footerRowMeans[offset - 1]) > 6.0) {
                     lastTexturedFooter = footerRows
                 }
             } else {
                 break
             }
         }
-        let finalFooter = lastTexturedFooter > 0 ? min(footerRows, lastTexturedFooter + 2) : 0
+        if lastTexturedFooter == 0, footerRows > 0, footerRows < maxFooter {
+            let nextOff = (topH - 1 - footerRows) * stride
+            var nextSum = 0
+            for x in xStart..<xEnd {
+                nextSum += Int(top[nextOff + x])
+            }
+            let nextMean = Double(nextSum) / Double(span)
+            if abs(nextMean - footerRowMeans[footerRows - 1]) > 10.0 {
+                lastTexturedFooter = footerRows
+            }
+        }
+        let finalFooter: Int
+        if lastTexturedFooter == 0 {
+            finalFooter = 0
+        } else if footerRows < maxFooter && (footerRows - lastTexturedFooter) <= 18 {
+            finalFooter = footerRows
+        } else {
+            finalFooter = min(footerRows, lastTexturedFooter + 4)
+        }
 
         return (finalHeader, finalFooter)
     }
