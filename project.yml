@@ -53,7 +53,7 @@ targets:
       - sdk: ReplayKit.framework
       - sdk: PDFKit.framework
       - sdk: UserNotifications.framework
-      - sdk: Compression.framework
+      - sdk: libcompression.tbd
 
   ZetaScrollshotExtension:
     type: app-extension
