@@ -104,10 +104,25 @@ jobs:
           ls -lh build/ZetaStitch-unsigned.ipa
 
       - name: Upload unsigned IPA artifact
+        id: upload_unsigned
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ZetaStitch-unsigned-ipa
           path: build/ZetaStitch-unsigned.ipa
+          compression-level: 0
+
+      - name: Wait before retrying unsigned IPA upload
+        if: ${{ steps.upload_unsigned.outcome != 'success' }}
+        run: sleep 15
+
+      - name: Retry unsigned IPA artifact upload
+        if: ${{ steps.upload_unsigned.outcome != 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZetaStitch-unsigned-ipa
+          path: build/ZetaStitch-unsigned.ipa
+          compression-level: 0
 
       - name: Check signing secrets availability
         id: signing_check
@@ -190,11 +205,26 @@ jobs:
           mv build/signed_export/*.ipa build/ZetaStitch-signed.ipa
 
       - name: Upload signed IPA artifact
+        id: upload_signed
         if: ${{ steps.signing_check.outputs.enabled == 'true' }}
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ZetaStitch-signed-ipa
           path: build/ZetaStitch-signed.ipa
+          compression-level: 0
+
+      - name: Wait before retrying signed IPA upload
+        if: ${{ steps.signing_check.outputs.enabled == 'true' && steps.upload_signed.outcome != 'success' }}
+        run: sleep 15
+
+      - name: Retry signed IPA artifact upload
+        if: ${{ steps.signing_check.outputs.enabled == 'true' && steps.upload_signed.outcome != 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZetaStitch-signed-ipa
+          path: build/ZetaStitch-signed.ipa
+          compression-level: 0
 
       - name: Upload build logs on failure
         if: failure()
