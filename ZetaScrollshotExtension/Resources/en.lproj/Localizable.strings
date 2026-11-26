@@ -1,0 +1,3 @@
+"scrollshot.notification.title" = "Scrollshot Ready";
+"scrollshot.notification.body" = "%d frames captured. Tap to open Zeta and export.";
+"scrollshot.auto_finished.alert" = "Scrollshot ready. Open Zeta to view your stitched image.";

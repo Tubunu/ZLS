@@ -1,0 +1,3 @@
+"scrollshot.notification.title" = "长截图已生成";
+"scrollshot.notification.body" = "已捕获 %d 个画面，点击打开 Zeta 查看并导出。";
+"scrollshot.auto_finished.alert" = "滚动截屏已完成，请打开 Zeta 查看长截图。";

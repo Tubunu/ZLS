@@ -1,0 +1,3 @@
+"CFBundleDisplayName" = "Zeta Stitch";
+"NSPhotoLibraryAddUsageDescription" = "To save stitched long screenshots to your photo library";
+"NSPhotoLibraryUsageDescription" = "To select screenshots and screen recordings for stitching";

@@ -1,0 +1,3 @@
+"CFBundleDisplayName" = "Zeta 长截图";
+"NSPhotoLibraryAddUsageDescription" = "用于将拼接完成的高清长截图保存至您的系统相册";
+"NSPhotoLibraryUsageDescription" = "用于从相册读取屏幕截图或录屏视频以进行长图拼接";

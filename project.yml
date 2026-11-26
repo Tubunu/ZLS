@@ -1,0 +1,109 @@
+name: ZetaStitch
+options:
+  bundleIdPrefix: com.zeta
+  deploymentTarget:
+    iOS: "16.0"
+  xcodeVersion: "15.0"
+  createIntermediateGroups: true
+  defaultConfig: Release
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    MARKETING_VERSION: "2.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: "YES"
+    SWIFT_STRICT_CONCURRENCY: minimal
+    DEVELOPMENT_TEAM: ""
+
+targets:
+  ZetaStitch:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: ZetaStitch
+        excludes:
+          - "Info.plist"
+          - "ZetaStitch.entitlements"
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(APP_BUNDLE_ID)
+        INFOPLIST_FILE: ZetaStitch/Info.plist
+        CODE_SIGN_ENTITLEMENTS: ZetaStitch/ZetaStitch.entitlements
+        PROVISIONING_PROFILE_SPECIFIER: $(APP_PROVISION_PROFILE)
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: "NO"
+        APP_BUNDLE_ID: com.zeta.stitch
+        APP_PROVISION_PROFILE: ""
+    dependencies:
+      - target: ZetaScrollshotExtension
+      - sdk: Photos.framework
+      - sdk: PhotosUI.framework
+      - sdk: Vision.framework
+      - sdk: Metal.framework
+      - sdk: MetalKit.framework
+      - sdk: CoreImage.framework
+      - sdk: Accelerate.framework
+      - sdk: AVFoundation.framework
+      - sdk: ReplayKit.framework
+      - sdk: PDFKit.framework
+      - sdk: UserNotifications.framework
+      - sdk: Compression.framework
+
+  ZetaScrollshotExtension:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: ZetaScrollshotExtension
+        excludes:
+          - "Info.plist"
+          - "ZetaScrollshotExtension.entitlements"
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(EXT_BUNDLE_ID)
+        INFOPLIST_FILE: ZetaScrollshotExtension/Info.plist
+        CODE_SIGN_ENTITLEMENTS: ZetaScrollshotExtension/ZetaScrollshotExtension.entitlements
+        PROVISIONING_PROFILE_SPECIFIER: $(EXT_PROVISION_PROFILE)
+        SKIP_INSTALL: "YES"
+        EXT_BUNDLE_ID: com.zeta.stitch.scrollshot
+        EXT_PROVISION_PROFILE: ""
+    dependencies:
+      - sdk: ReplayKit.framework
+      - sdk: Vision.framework
+      - sdk: CoreImage.framework
+      - sdk: CoreMedia.framework
+      - sdk: CoreVideo.framework
+      - sdk: AVFoundation.framework
+      - sdk: Accelerate.framework
+      - sdk: UserNotifications.framework
+      - sdk: UIKit.framework
+
+  ZetaStitchTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: ZetaStitchTests
+    dependencies:
+      - target: ZetaStitch
+
+schemes:
+  ZetaStitch:
+    build:
+      targets:
+        ZetaStitch: all
+        ZetaScrollshotExtension: all
+        ZetaStitchTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - ZetaStitchTests
