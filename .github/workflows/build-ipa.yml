@@ -19,12 +19,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Select latest Xcode
+      - name: Select latest Xcode and ensure Metal Toolchain
         run: |
           XCODE_APP=$(ls -d /Applications/Xcode*.app | sort -V | tail -n 1)
           echo "Using Xcode: $XCODE_APP"
           sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          sudo xcodebuild -runFirstLaunch
           xcodebuild -version
+          if ! xcrun metal --version >/dev/null 2>&1; then
+            echo "Downloading MetalToolchain for Xcode 26+..."
+            xcodebuild -downloadComponent MetalToolchain
+          fi
 
       - name: Install XcodeGen
         run: brew install xcodegen
