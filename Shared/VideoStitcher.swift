@@ -249,7 +249,7 @@ public final class VideoStitcher {
         reader.timeRange = effectiveRange
 
         let outputSettings: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelBufferPixelFormatType_32BGRA
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
         ]
         let trackOutput = AVAssetReaderTrackOutput(track: videoTrack, outputSettings: outputSettings)
         trackOutput.alwaysCopiesSampleData = false

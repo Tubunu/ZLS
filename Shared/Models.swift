@@ -53,7 +53,7 @@ public enum AutoEndSeconds: Double, Codable, CaseIterable, Identifiable {
     public var id: Double { rawValue }
 }
 
-public enum SeamMatchStatus: Equatable, Codable {
+public enum SeamMatchStatus: Equatable, Codable, Sendable {
     case matched(confidence: Double)
     case noMatch
     case manual
@@ -65,7 +65,7 @@ public enum SeamMatchStatus: Equatable, Codable {
 }
 
 /// Represents the seam between `topIndex` and `topIndex + 1` in a stitched sequence.
-public struct StitchSeam: Identifiable, Equatable, Codable {
+public struct StitchSeam: Identifiable, Equatable, Codable, Sendable {
     public let id: UUID
     public let topIndex: Int
     /// Pixels trimmed from the bottom of the upper frame (e.g. static tab bar / home bar).
