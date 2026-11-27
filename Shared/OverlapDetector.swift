@@ -736,11 +736,13 @@ public final class OverlapDetector: @unchecked Sendable {
                     var resumeY: Int?
                     var consecTex = 0
                     var consecMatch = 0
+                    let preGapMean = means[lastMatchY]
                     let lookEnd = min(maxHeader, y + clockGap + 40)
                     for k in y..<lookEnd {
                         if matchFlags[k] {
                             consecMatch += 1
-                            let isDividerStep = k > 0 && abs(means[k] - means[k - 1]) >= 10
+                            let isDividerStep = abs(means[k] - preGapMean) >= 10
+                                || (k > 0 && abs(means[k] - means[k - 1]) >= 10)
                             if texFlags[k] || isDividerStep { consecTex += 1 }
                             if consecTex >= 2 && consecMatch >= 4 {
                                 var startRun = k
@@ -1324,7 +1326,13 @@ public final class OverlapDetector: @unchecked Sendable {
         guard span >= minOverlap else { return nil }
 
         let activeW = max(1, xEnd - xStart)
+        let mainLimitX = max(8, Int((Double(activeW) * 0.78).rounded()))
         let colStep = max(1, activeW / 96)
+        let isVideoMode = config.maxNormalizedMAD > 0.055
+        let tol = isVideoMode ? 22 : 14
+        let minMainFrac = isVideoMode ? 0.84 : 0.92
+        let maxMainMAD = isVideoMode ? 15.0 : 9.0
+        let minFgFrac = isVideoMode ? 0.64 : 0.78
 
         var rowMatches = [Bool](repeating: false, count: span)
         var rowMADs = [Double](repeating: 255.0, count: span)
@@ -1339,40 +1347,57 @@ public final class OverlapDetector: @unchecked Sendable {
                     let tBase = topY * tw + xStart
                     let bBase = botY * bw + xStart
 
-                    var cIdx = 0
-                    var close = 0
-                    var inlierSum = 0
-                    var inlierCount = 0
-                    var totalCappedSum = 0
+                    let tBg = (Int(tPx[tBase]) + Int(tPx[tBase + activeW - 1])) >> 1
+                    let bBg = (Int(bPx[bBase]) + Int(bPx[bBase + activeW - 1])) >> 1
+
+                    var allCount = 0
+                    var allClose = 0
+                    var mainCount = 0
+                    var mainClose = 0
+                    var mainDiffSum = 0
+                    var fgTotal = 0
+                    var fgMatch = 0
+
                     var x = 0
                     while x < activeW {
-                        let d = abs(Int(tPx[tBase + x]) - Int(bPx[bBase + x]))
-                        totalCappedSum += min(d, 36)
-                        if d <= 14 { close += 1 }
-                        if d <= 36 {
-                            inlierSum += d
-                            inlierCount += 1
+                        let tv = Int(tPx[tBase + x])
+                        let bv = Int(bPx[bBase + x])
+                        let d = abs(tv - bv)
+                        if d <= tol { allClose += 1 }
+                        allCount += 1
+
+                        if x < mainLimitX {
+                            mainCount += 1
+                            mainDiffSum += d
+                            if d <= tol { mainClose += 1 }
+
+                            if abs(tv - tBg) > 20 || abs(bv - bBg) > 20 {
+                                fgTotal += 1
+                                if d <= tol + 4 { fgMatch += 1 }
+                            }
                         }
-                        cIdx += 1
                         x += colStep
                     }
 
-                    let denom = Double(max(1, cIdx))
-                    let goodFrac = Double(close) / denom
-                    if goodFrac < 0.72 {
+                    let goodFracAll = Double(allClose) / Double(max(1, allCount))
+                    let mainFrac = Double(mainClose) / Double(max(1, mainCount))
+                    let mainMAD = Double(mainDiffSum) / Double(max(1, mainCount))
+
+                    guard goodFracAll >= 0.76, mainFrac >= minMainFrac, mainMAD <= maxMainMAD else {
                         rowMatches[k] = false
                         continue
                     }
 
-                    let inlierFrac = Double(inlierCount) / denom
-                    let robustMAD = inlierFrac >= 0.80
-                        ? Double(inlierSum) / Double(max(1, inlierCount))
-                        : Double(totalCappedSum) / denom
+                    if fgTotal >= 2 {
+                        let fgFrac = Double(fgMatch) / Double(fgTotal)
+                        if fgFrac < minFgFrac {
+                            rowMatches[k] = false
+                            continue
+                        }
+                    }
 
-                    let acceptable = (robustMAD <= 14.0 && goodFrac >= 0.78)
-                        || (robustMAD <= 6.5 && goodFrac >= 0.74)
-                    rowMatches[k] = acceptable
-                    rowMADs[k] = robustMAD
+                    rowMatches[k] = true
+                    rowMADs[k] = mainMAD
                 }
             }
         }
