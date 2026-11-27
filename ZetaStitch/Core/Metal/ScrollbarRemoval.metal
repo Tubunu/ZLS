@@ -40,17 +40,24 @@ kernel void scrollBarTransform(
     int sampleLeftX = max(0, minX - int(params.leftPadding));
     int sampleRightX = min(int(texW) - 1, maxX + int(params.rightPadding));
 
-    float4 leftColor = inTexture.read(uint2(uint(sampleLeftX), gid.y));
-    float4 rightColor = inTexture.read(uint2(uint(sampleRightX), gid.y));
+    // Average 3 outer background texels on each side to suppress H.264 compression ringing
+    // without touching the removed capsule region [minX, maxX).
+    int l0 = max(0, min(minX - 1, sampleLeftX - 1));
+    int l1 = max(0, min(minX - 1, sampleLeftX));
+    int l2 = max(0, min(minX - 1, sampleLeftX + 1));
+    float4 leftColor = (inTexture.read(uint2(uint(l0), gid.y))
+        + inTexture.read(uint2(uint(l1), gid.y))
+        + inTexture.read(uint2(uint(l2), gid.y))) / 3.0;
+
+    int rMaxBound = max(maxX, int(texW) - 1);
+    int r0 = min(int(texW) - 1, max(min(maxX, rMaxBound), sampleRightX - 1));
+    int r1 = min(int(texW) - 1, max(min(maxX, rMaxBound), sampleRightX));
+    int r2 = min(int(texW) - 1, max(min(maxX, rMaxBound), sampleRightX + 1));
+    float4 rightColor = (inTexture.read(uint2(uint(r0), gid.y))
+        + inTexture.read(uint2(uint(r1), gid.y))
+        + inTexture.read(uint2(uint(r2), gid.y))) / 3.0;
 
     float t = float(x - minX + 1) / float(max(1, params.barWidth + 1));
     float4 interpolated = mix(leftColor, rightColor, t);
-
-    // Subtle 2px vertical cap feathering to eliminate edge artifacts.
-    float distTop = float(y - minY);
-    float distBot = float(maxY - 1 - y);
-    float verticalMask = clamp(min(distTop, distBot) * 0.5 + 0.5, 0.0, 1.0);
-
-    float4 result = mix(orig, interpolated, verticalMask);
-    outTexture.write(result, gid);
+    outTexture.write(interpolated, gid);
 }

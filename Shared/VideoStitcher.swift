@@ -494,7 +494,9 @@ public final class VideoStitcher {
                 topImage: topImg,
                 bottomImage: botImg,
                 expectedOverlapHint: hint,
-                searchRadius: max(120, Int(Double(topImg.height) * 0.20))
+                searchRadius: max(120, Int(Double(topImg.height) * 0.20)),
+                forcedHeaderRows: initialChrome.headerRows > 0 ? initialChrome.headerRows : nil,
+                forcedFooterRows: initialChrome.footerRows > 0 ? initialChrome.footerRows : nil
             )
 
             if result.isMatched {
@@ -539,7 +541,9 @@ public final class VideoStitcher {
                         topImage: finalImages[idx],
                         bottomImage: finalImages[idx + 1],
                         expectedOverlapHint: hint,
-                        searchRadius: max(120, Int(Double(finalImages[idx].height) * 0.20))
+                        searchRadius: max(120, Int(Double(finalImages[idx].height) * 0.20)),
+                        forcedHeaderRows: initialChrome.headerRows > 0 ? initialChrome.headerRows : nil,
+                        forcedFooterRows: initialChrome.footerRows > 0 ? initialChrome.footerRows : nil
                     ).toSeam(topIndex: idx)
                 }
             }

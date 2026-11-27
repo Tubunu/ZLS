@@ -150,8 +150,10 @@ public final class OverlapDetector: @unchecked Sendable {
             xStart: xStart,
             xEnd: xEnd
         )
-        let headerRows = min(max(0, forcedHeaderRows ?? detectedChrome.headerRows), minH / 2)
-        let footerRows = min(max(0, forcedFooterRows ?? detectedChrome.footerRows), minH / 2)
+        let effectiveHeaderCore = min(max(detectedChrome.headerCoreRows, forcedHeaderRows ?? 0), minH / 2)
+        let effectiveFooterCore = min(max(detectedChrome.footerCoreRows, forcedFooterRows ?? 0), minH / 2)
+        let headerRows = min(max(detectedChrome.headerRows, forcedHeaderRows ?? 0), minH / 2)
+        let footerRows = min(max(detectedChrome.footerRows, forcedFooterRows ?? 0), minH / 2)
 
         let topWinStart = headerRows
         let topWinEnd = max(topWinStart, topH - footerRows)
@@ -262,8 +264,8 @@ public final class OverlapDetector: @unchecked Sendable {
                     topH: topH,
                     origBotH: origBotH,
                     botScaleY: botScaleY,
-                    minBotExpandY: detectedChrome.headerCoreRows,
-                    maxTopExpandY: topH - detectedChrome.footerCoreRows,
+                    minBotExpandY: effectiveHeaderCore,
+                    maxTopExpandY: topH - effectiveFooterCore,
                     headerRows: headerRows,
                     footerRows: footerRows,
                     staticHeaderOrigBot: staticHeaderOrigBot
@@ -365,8 +367,8 @@ public final class OverlapDetector: @unchecked Sendable {
                 topH: topH,
                 origBotH: origBotH,
                 botScaleY: botScaleY,
-                minBotExpandY: detectedChrome.headerCoreRows,
-                maxTopExpandY: topH - detectedChrome.footerCoreRows,
+                minBotExpandY: effectiveHeaderCore,
+                maxTopExpandY: topH - effectiveFooterCore,
                 headerRows: headerRows,
                 footerRows: footerRows,
                 staticHeaderOrigBot: staticHeaderOrigBot
@@ -876,12 +878,277 @@ public final class OverlapDetector: @unchecked Sendable {
             }
         }
 
-        return StaticChrome(
-            headerRows: headerRows,
-            footerRows: footerRows,
-            headerCoreRows: headerCoreRows,
-            footerCoreRows: footerCoreRows
+        let (glassHeader, glassFooter) = detectFloatingGlassChrome(
+            top: top,
+            bottom: bottom,
+            xStart: xStart,
+            xEnd: xEnd,
+            opaqueHeaderRows: headerRows,
+            opaqueFooterRows: footerRows
         )
+
+        var finalHeaderRows = headerRows
+        var finalHeaderCoreRows = headerCoreRows
+        if glassHeader > headerRows + 12 {
+            finalHeaderRows = glassHeader
+            // Lock header core right at glass bottom halo so overlap expansion never pulls glass blur back in.
+            finalHeaderCoreRows = glassHeader
+        }
+
+        var finalFooterRows = footerRows
+        var finalFooterCoreRows = footerCoreRows
+        if glassFooter > footerRows + 12 {
+            finalFooterRows = glassFooter
+            // Lock footer core right above glass rim/shadow so seams cut strictly before frosted glass begins.
+            finalFooterCoreRows = glassFooter
+        }
+
+        return StaticChrome(
+            headerRows: finalHeaderRows,
+            footerRows: finalFooterRows,
+            headerCoreRows: finalHeaderCoreRows,
+            footerCoreRows: finalFooterCoreRows
+        )
+    }
+
+    /// Detects floating or translucent glass chrome bars (such as iOS 26 Liquid Glass pills or
+    /// frosted overlays) whose background luminance shifts as scrolled content passes underneath,
+    /// while their fixed icon/border gradient patterns stay locked at identical `(x, y)` coordinates.
+    private static func detectFloatingGlassChrome(
+        top: GrayBitmap,
+        bottom: GrayBitmap,
+        xStart: Int,
+        xEnd: Int,
+        opaqueHeaderRows: Int,
+        opaqueFooterRows: Int
+    ) -> (headerRows: Int, footerRows: Int) {
+        let minH = min(top.height, bottom.height)
+        let activeW = xEnd - xStart
+        guard minH >= 240, activeW >= 64 else { return (0, 0) }
+
+        let colStep = max(1, activeW / 240)
+        let numCols = max(1, (activeW + colStep - 1) / colStep)
+        guard numCols >= 12 else { return (0, 0) }
+
+        // Confirm real scroll motion exists between `top` and `bottom` so identical static pauses
+        // aren't cut via edge correlation alone.
+        var midChecked = 0
+        var midChanged = 0
+        let midY0 = Int(Double(minH) * 0.34)
+        let midY1 = Int(Double(minH) * 0.66)
+        var my = midY0
+        while my < midY1 {
+            let tBase = my * top.width + xStart
+            let bBase = my * bottom.width + xStart
+            var rowDiffs = 0
+            var x = 0
+            while x < activeW {
+                if abs(Int(top.pixels[tBase + x]) - Int(bottom.pixels[bBase + x])) > 10 {
+                    rowDiffs += 1
+                }
+                x += colStep * 4
+            }
+            if rowDiffs >= 2 { midChanged += 1 }
+            midChecked += 1
+            my += max(6, (midY1 - midY0) / 24)
+        }
+        guard midChecked > 0, midChanged >= 2 else { return (0, 0) }
+
+        var tBuf = [Double](repeating: 0, count: numCols)
+        var bBuf = [Double](repeating: 0, count: numCols)
+        var tPrev2 = [Double](repeating: 0, count: numCols)
+        var bPrev2 = [Double](repeating: 0, count: numCols)
+
+        func analyzeRow(topY: Int, botY: Int) -> (locked: Bool, vCos: Double, vEdgeCount: Int, rawMismatch: Bool) {
+            guard topY >= 0, topY < top.height, botY >= 0, botY < bottom.height else {
+                return (false, 0, 0, false)
+            }
+            let tBase = topY * top.width + xStart
+            let bBase = botY * bottom.width + xStart
+            var idx = 0
+            var x = 0
+            var closePx = 0
+            while x < activeW && idx < numCols {
+                let tv = Double(top.pixels[tBase + x])
+                let bv = Double(bottom.pixels[bBase + x])
+                tBuf[idx] = tv
+                bBuf[idx] = bv
+                if abs(tv - bv) <= 10 { closePx += 1 }
+                idx += 1
+                x += colStep
+            }
+            let n = idx
+            guard n >= 8 else { return (false, 0, 0, false) }
+
+            var dotH = 0.0
+            var normTH = 0.0
+            var normBH = 0.0
+            var hEdge = 0
+            for i in 0..<(n - 1) {
+                let gt = tBuf[i + 1] - tBuf[i]
+                let gb = bBuf[i + 1] - bBuf[i]
+                if abs(gt) > 3.0 || abs(gb) > 3.0 { hEdge += 1 }
+                dotH += gt * gb
+                normTH += gt * gt
+                normBH += gb * gb
+            }
+            let hCos = hEdge >= 6 ? dotH / (sqrt(normTH) * sqrt(normBH) + 1e-6) : 0.0
+
+            var vCos = 0.0
+            var vEdge = 0
+            if topY >= 2 && botY >= 2 {
+                let tpBase = (topY - 2) * top.width + xStart
+                let bpBase = (botY - 2) * bottom.width + xStart
+                var i2 = 0
+                var x2 = 0
+                var dotV = 0.0
+                var normTV = 0.0
+                var normBV = 0.0
+                while x2 < activeW && i2 < n {
+                    tPrev2[i2] = Double(top.pixels[tpBase + x2])
+                    bPrev2[i2] = Double(bottom.pixels[bpBase + x2])
+                    let vt = tBuf[i2] - tPrev2[i2]
+                    let vb = bBuf[i2] - bPrev2[i2]
+                    if abs(vt) > 3.0 || abs(vb) > 3.0 { vEdge += 1 }
+                    dotV += vt * vb
+                    normTV += vt * vt
+                    normBV += vb * vb
+                    i2 += 1
+                    x2 += colStep
+                }
+                if vEdge >= 6 {
+                    vCos = dotV / (sqrt(normTV) * sqrt(normBV) + 1e-6)
+                }
+            }
+
+            let locked = (hCos >= 0.72 && hEdge >= 6) || (vCos >= 0.78 && vEdge >= 12)
+            let rawMismatch = Double(closePx) / Double(n) < 0.94
+            return (locked, vCos, vEdge, rawMismatch)
+        }
+
+        let minClusterCount = max(12, Int((Double(minH) * 0.008).rounded()))
+        let minClusterSpan = max(18, Int((Double(minH) * 0.012).rounded()))
+
+        // 1. Top Floating / Translucent Glass Zone
+        var glassHeader = 0
+        let topLimit = min(Int(Double(minH) * 0.30), max(0, minH - 64))
+        if topLimit >= 32 {
+            var lockedYs: [Int] = []
+            lockedYs.reserveCapacity(topLimit / 2)
+            var topVInfo: [(vCos: Double, vEdge: Int)] = Array(repeating: (0, 0), count: topLimit)
+            var mismatchCount = 0
+
+            for y in 0..<topLimit {
+                let info = analyzeRow(topY: y, botY: y)
+                topVInfo[y] = (info.vCos, info.vEdge)
+                if info.rawMismatch { mismatchCount += 1 }
+                if info.locked { lockedYs.append(y) }
+            }
+
+            if lockedYs.count >= minClusterCount && mismatchCount >= 4 {
+                var clusters: [[Int]] = []
+                var cur: [Int] = [lockedYs[0]]
+                for yy in lockedYs.dropFirst() {
+                    if yy - cur.last! <= 80 {
+                        cur.append(yy)
+                    } else {
+                        clusters.append(cur)
+                        cur = [yy]
+                    }
+                }
+                clusters.append(cur)
+
+                let maxTopStart = Int(Double(minH) * 0.18)
+                let valid = clusters.filter { c in
+                    c.count >= minClusterCount && (c.last! - c.first! + 1) >= minClusterSpan && c.first! <= maxTopStart
+                }
+                if let lastCluster = valid.last {
+                    let clusterEnd = lastCluster.last!
+                    if clusterEnd > opaqueHeaderRows + 12 {
+                        var rimY = clusterEnd
+                        let searchEnd = min(topLimit - 1, clusterEnd + max(20, Int((Double(minH) * 0.018).rounded())))
+                        let rimThresh = max(12, Int((Double(numCols) * 0.25).rounded()))
+                        if clusterEnd < searchEnd {
+                            for y in (clusterEnd + 1)...searchEnd {
+                                if topVInfo[y].vCos >= 0.45 && topVInfo[y].vEdge >= rimThresh {
+                                    rimY = y
+                                }
+                            }
+                        }
+                        let halo = max(12, Int((Double(minH) * 0.006).rounded()))
+                        glassHeader = min(topLimit, rimY + halo + 1)
+                    }
+                }
+            }
+        }
+
+        // 2. Bottom Floating / Translucent Glass Zone
+        var glassFooter = 0
+        let botHeight = min(Int(Double(minH) * 0.24), max(0, minH - 64))
+        let botMinStart = max(topLimit, minH - botHeight)
+        let botSpan = minH - botMinStart
+        if botSpan >= 32 {
+            // Index `i = 0..<botSpan` goes top-to-bottom within bottom band:
+            // `k = botSpan - 1 - i` is distance from bottom edge (`0` = bottom-most row).
+            var lockedIndices: [Int] = []
+            lockedIndices.reserveCapacity(botSpan / 2)
+            var botVInfo: [(vCos: Double, vEdge: Int)] = Array(repeating: (0, 0), count: botSpan)
+            var mismatchCount = 0
+
+            for i in 0..<botSpan {
+                let kFromBot = botSpan - 1 - i
+                let tY = top.height - 1 - kFromBot
+                let bY = bottom.height - 1 - kFromBot
+                let info = analyzeRow(topY: tY, botY: bY)
+                botVInfo[i] = (info.vCos, info.vEdge)
+                if info.rawMismatch { mismatchCount += 1 }
+                if info.locked { lockedIndices.append(i) }
+            }
+
+            if lockedIndices.count >= minClusterCount && mismatchCount >= 4 {
+                var clusters: [[Int]] = []
+                var cur: [Int] = [lockedIndices[0]]
+                for idx in lockedIndices.dropFirst() {
+                    if idx - cur.last! <= 48 {
+                        cur.append(idx)
+                    } else {
+                        clusters.append(cur)
+                        cur = [idx]
+                    }
+                }
+                clusters.append(cur)
+
+                let minEndIdx = max(0, botSpan - Int(Double(minH) * 0.16))
+                let valid = clusters.filter { c in
+                    c.count >= minClusterCount && (c.last! - c.first! + 1) >= minClusterSpan && c.last! >= minEndIdx
+                }
+                if let lastCluster = valid.last {
+                    let clusterTopIdx = lastCluster.first!
+                    let clusterTopFromBot = botSpan - clusterTopIdx
+                    if clusterTopFromBot > opaqueFooterRows + 12 {
+                        var rimIdx = clusterTopIdx
+                        var foundRim = false
+                        let searchStart = max(0, clusterTopIdx - max(28, Int((Double(minH) * 0.025).rounded())))
+                        let rimThresh = max(12, Int((Double(numCols) * 0.22).rounded()))
+                        if searchStart < clusterTopIdx {
+                            for idx in stride(from: clusterTopIdx - 1, through: searchStart, by: -1) {
+                                if botVInfo[idx].vCos >= 0.35 && botVInfo[idx].vEdge >= rimThresh {
+                                    rimIdx = idx
+                                    foundRim = true
+                                }
+                            }
+                        }
+                        let halo = foundRim
+                            ? max(20, Int((Double(minH) * 0.010).rounded()))
+                            : max(26, Int((Double(minH) * 0.018).rounded()))
+                        let topIdxWithHalo = max(0, rimIdx - halo)
+                        glassFooter = min(botSpan, botSpan - topIdxWithHalo)
+                    }
+                }
+            }
+        }
+
+        return (glassHeader, glassFooter)
     }
 
     // MARK: - Candidate Generation 1: Bit-Hash 2D Rolling DP (PixelHashMerger)

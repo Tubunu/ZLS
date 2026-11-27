@@ -727,4 +727,148 @@ final class ZetaStitchTests: XCTestCase {
             throw err
         }
     }
+
+    func testFloatingTranslucentGlassBarsAreExcludedWithoutResidual() throws {
+        let width = 720
+        let height = 1400
+        let topGlassH = 180
+        let botGlassTop = 1230
+        let botGlassBot = 1332
+        let overlap = 280
+        let scrollStep = (botGlassTop - 16) - topGlassH - overlap
+        let feedH = height * 2
+
+        let feed = makeRealisticFeedImage(width: width, height: feedH, darkMode: false)
+
+        func renderGlassFrame(feedOffset: Int) -> CGImage {
+            var bytes = [UInt8](repeating: 254, count: width * height * 4)
+            let crop = feed.cropping(to: CGRect(x: 0, y: feedOffset, width: width, height: height))!
+            var feedBytes = [UInt8](repeating: 0, count: width * height * 4)
+            let cs = CGColorSpaceCreateDeviceRGB()
+            let ctx = CGContext(
+                data: &feedBytes,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width * 4,
+                space: cs,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )!
+            ctx.draw(crop, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+            for y in 0..<height {
+                for x in 0..<width {
+                    let off = (y * width + x) * 4
+                    // Underlay blurred scrolling feed beneath translucent glass zones
+                    let srcOff = off
+                    var r = Double(feedBytes[srcOff])
+                    var g = Double(feedBytes[srcOff + 1])
+                    var b = Double(feedBytes[srcOff + 2])
+
+                    if y < topGlassH {
+                        // Frosted translucency mixes scrolling feed with translucent white & fixed icons
+                        r = r * 0.25 + 248.0 * 0.75
+                        g = g * 0.25 + 248.0 * 0.75
+                        b = b * 0.25 + 248.0 * 0.75
+                        if y >= 78 && y <= 142 && ((x >= 44 && x <= 104 && abs(x - 74) + abs(y - 110) < 28) || (x >= 520 && x <= 670 && (x + y) % 9 < 4)) {
+                            r = 36; g = 38; b = 42
+                        }
+                        if y >= topGlassH - 2 && x >= 32 && x < width - 32 {
+                            r = 212; g = 214; b = 218
+                        }
+                    } else if y >= botGlassTop - 8 && y <= botGlassBot {
+                        // Soft outer drop shadow (botGlassTop-8 .. botGlassTop-1) + capsule rim + fixed icon glyphs
+                        if y < botGlassTop {
+                            let shadow = Double(8 - (botGlassTop - y)) * 1.4
+                            r = max(0, r - shadow)
+                            g = max(0, g - shadow)
+                            b = max(0, b - shadow)
+                        } else if y <= botGlassTop + 2 && ((x >= 50 && x <= 310) || (x >= 350 && x <= 670)) {
+                            r = 188; g = 190; b = 195
+                        } else {
+                            r = r * 0.28 + 250.0 * 0.72
+                            g = g * 0.28 + 250.0 * 0.72
+                            b = b * 0.28 + 250.0 * 0.72
+                            if y >= botGlassTop + 22 && y <= botGlassBot - 22 && ((x >= 90 && x <= 230 && (x + y) % 8 < 4) || (x >= 390 && x <= 620 && (x * 3 + y) % 11 < 4)) {
+                                r = 34; g = 36; b = 40
+                            }
+                        }
+                    }
+
+                    bytes[off] = UInt8(max(0, min(255, Int(r.rounded()))))
+                    bytes[off + 1] = UInt8(max(0, min(255, Int(g.rounded()))))
+                    bytes[off + 2] = UInt8(max(0, min(255, Int(b.rounded()))))
+                    bytes[off + 3] = 255
+                }
+            }
+            return imageFromRGBA(bytes: bytes, width: width, height: height)
+        }
+
+        let topImg = renderGlassFrame(feedOffset: 0)
+        let botImg = renderGlassFrame(feedOffset: scrollStep)
+
+        let detector = OverlapDetector(config: OverlapDetectionConfig(autoTrimStaticBars: true, maxNormalizedMAD: 0.065))
+        let res = detector.detectVerticalOverlap(topImage: topImg, bottomImage: botImg)
+
+        XCTAssertTrue(res.isMatched, "Should match scrolling content across floating glass chrome")
+        let minRequiredBottomCrop = height - (botGlassTop - 4)
+        XCTAssertGreaterThanOrEqual(
+            res.topCropBottom,
+            minRequiredBottomCrop,
+            "Top slice crop (\(res.topCropBottom)) must exclude entire bottom glass pill & outer drop shadow (>= \(minRequiredBottomCrop))"
+        )
+        XCTAssertGreaterThanOrEqual(
+            res.botCropTop,
+            topGlassH,
+            "Bottom slice crop (\(res.botCropTop)) must skip floating top glass header"
+        )
+    }
+
+    func testScrollbarRemovalEliminatesAntiAliasedBorderAndCaps() throws {
+        let width = 600
+        let height = 1000
+        var bytes = [UInt8](repeating: 254, count: width * height * 4)
+
+        // Draw realistic iOS scroll indicator with 8px solid core (155),
+        // 2px anti-aliased horizontal edges (192, 232), and 3px rounded top/bottom caps.
+        let barCoreX0 = 582
+        let barCoreX1 = 590
+        let barY0 = 200
+        let barY1 = 500
+        for y in (barY0 - 3)...(barY1 + 3) {
+            for x in (barCoreX0 - 2)...(barCoreX1 + 1) {
+                let distTop = max(0, barY0 - y)
+                let distBot = max(0, y - barY1)
+                let distY = max(distTop, distBot)
+                let distLeft = max(0, barCoreX0 - x)
+                let distRight = max(0, x - (barCoreX1 - 1))
+                let distX = max(distLeft, distRight)
+
+                var luma: UInt8 = 254
+                if distY == 0 && distX == 0 {
+                    luma = 155
+                } else if distY + distX <= 2 {
+                    luma = distY + distX == 1 ? 192 : 232
+                }
+                let off = (y * width + x) * 4
+                bytes[off] = luma; bytes[off + 1] = luma; bytes[off + 2] = luma; bytes[off + 3] = 255
+            }
+        }
+
+        let img = imageFromRGBA(bytes: bytes, width: width, height: height)
+        let regions = ScrollbarDetector.detectScrollbars(in: img)
+        XCTAssertEqual(regions.count, 1)
+
+        let cleaned = ScrollbarProcessor.shared.removeScrollbars(from: img, regions: regions)
+        for y in (barY0 - 5)...(barY1 + 5) {
+            for x in (barCoreX0 - 4)...(barCoreX1 + 3) {
+                let px = samplePixel(cleaned, x: x, y: y)
+                XCTAssertGreaterThanOrEqual(
+                    Int(px.r),
+                    249,
+                    "Residual 1px scrollbar edge/cap artifact left at (\(x),\(y)): r=\(px.r)"
+                )
+            }
+        }
+    }
 }

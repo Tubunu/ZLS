@@ -11,36 +11,36 @@ public struct ScrollbarDetector {
         guard w >= 80, h >= 100 else { return [] }
 
         // Scan the rightmost strip where iOS renders UIScrollView / WKWebView indicators.
-        let stripWidth = min(44, max(24, w / 16))
+        let stripWidth = min(56, max(28, w / 16))
         let stripX = w - stripWidth
         guard let stripCrop = image.cropping(to: CGRect(x: stripX, y: 0, width: stripWidth, height: h)),
               let pixels = rgbaBytes(from: stripCrop, width: stripWidth, height: h) else {
             return []
         }
 
-        let minBarWidth = max(3, Int((Double(w) * 0.004).rounded()))
-        let maxBarWidth = max(minBarWidth + 4, Int((Double(w) * 0.022).rounded()))
+        let minBarWidth = max(3, Int((Double(w) * 0.003).rounded()))
+        let maxBarWidth = min(stripWidth - 12, max(minBarWidth + 4, Int((Double(w) * 0.018).rounded())))
         let minBarHeight = max(32, Int((Double(h) * 0.03).rounded()))
+        guard minBarWidth <= maxBarWidth else { return [] }
 
-        // Evaluate candidate columns from right to left (typical indicator sits ~4..24px from right edge).
+        // Stage A: Locate vertical scrollbar core capsule using outer background sampling
+        // (far enough outside the capsule so anti-aliased edge shoulders don't pollute background).
         var bestSpan: (localX: Int, barW: Int, yStart: Int, yEnd: Int, score: Double)?
 
-        for candW in minBarWidth...min(maxBarWidth, stripWidth - 8) {
-            for lx in stride(from: stripWidth - candW - 4, through: 4, by: -1) {
+        for candW in minBarWidth...maxBarWidth {
+            for lx in stride(from: stripWidth - candW - 6, through: 6, by: -1) {
                 var activeMask = [Bool](repeating: false, count: h)
 
                 for y in 0..<h {
-                    let leftSampleX = max(0, lx - 3)
-                    let rightSampleX = min(stripWidth - 1, lx + candW + 2)
+                    let leftSampleX = max(0, lx - 6)
+                    let rightSampleX = min(stripWidth - 1, lx + candW + 5)
                     let lRGB = rgb(pixels, stride: stripWidth, x: leftSampleX, y: y)
                     let rRGB = rgb(pixels, stride: stripWidth, x: rightSampleX, y: y)
 
                     // Left and right background around the scrollbar should agree closely.
                     let bgDiff = colorDistance(lRGB, rRGB)
-                    guard bgDiff < 22.0 else { continue }
+                    guard bgDiff < 20.0 else { continue }
 
-                    // Pixels inside the scrollbar capsule should be consistent and distinct from background.
-                    var minInteriorDiff = Double.greatestFiniteMagnitude
                     var maxInternalSpread = 0.0
                     let firstIn = rgb(pixels, stride: stripWidth, x: lx + candW / 2, y: y)
 
@@ -53,14 +53,14 @@ public struct ScrollbarDetector {
                         (lRGB.1 + rRGB.1) * 0.5,
                         (lRGB.2 + rRGB.2) * 0.5
                     )
-                    minInteriorDiff = colorDistance(firstIn, bgAvg)
+                    let minInteriorDiff = colorDistance(firstIn, bgAvg)
 
-                    if maxInternalSpread < 26.0 && minInteriorDiff > 16.0 {
+                    if maxInternalSpread < 28.0 && minInteriorDiff > 14.0 {
                         activeMask[y] = true
                     }
                 }
 
-                // Extract longest contiguous run (allowing up to 2px rounded-cap gap).
+                // Extract longest contiguous run (allowing up to 3px horizontal-divider / cap gaps).
                 var y = 0
                 while y < h {
                     if !activeMask[y] {
@@ -74,7 +74,7 @@ public struct ScrollbarDetector {
                         if activeMask[end + 1] {
                             end += 1
                             gap = 0
-                        } else if gap < 2 && end + 2 < h && activeMask[end + 2] {
+                        } else if gap < 3 && end + 2 < h && activeMask[end + 2] {
                             gap += 1
                             end += 1
                         } else {
@@ -83,7 +83,8 @@ public struct ScrollbarDetector {
                     }
                     let runLen = end - start + 1
                     if runLen >= minBarHeight {
-                        let score = Double(runLen) - Double(abs(candW - 6)) * 2.0
+                        // Prefer wider full core capsules over narrow 3px slices inside the capsule.
+                        let score = Double(runLen) + Double(candW) * 4.0
                         if bestSpan == nil || score > bestSpan!.score {
                             bestSpan = (lx, candW, start, end, score)
                         }
@@ -94,13 +95,99 @@ public struct ScrollbarDetector {
         }
 
         guard let found = bestSpan else { return [] }
+
+        // Stage B: Expand horizontally & vertically to capture the full anti-aliased edge halo
+        // and semi-transparent rounded caps so removal leaves zero 1px outline box.
+        let coreLen = max(1, found.yEnd - found.yStart + 1)
+        let midY0 = found.yStart + coreLen / 4
+        let midY1 = max(midY0 + 1, found.yEnd - coreLen / 4)
+        let rowStep = max(1, (midY1 - midY0) / 48)
+
+        func rowOuterBg(y: Int, leftX: Int, rightX: Int) -> (Double, Double, Double) {
+            let lx1 = max(0, leftX - 6)
+            let lx2 = max(0, leftX - 5)
+            let rx1 = min(stripWidth - 1, rightX + 5)
+            let rx2 = min(stripWidth - 1, rightX + 6)
+            let l1 = rgb(pixels, stride: stripWidth, x: lx1, y: y)
+            let l2 = rgb(pixels, stride: stripWidth, x: lx2, y: y)
+            let r1 = rgb(pixels, stride: stripWidth, x: rx1, y: y)
+            let r2 = rgb(pixels, stride: stripWidth, x: rx2, y: y)
+            return (
+                (l1.0 + l2.0 + r1.0 + r2.0) * 0.25,
+                (l1.1 + l2.1 + r1.1 + r2.1) * 0.25,
+                (l1.2 + l2.2 + r1.2 + r2.2) * 0.25
+            )
+        }
+
+        func columnDiffersFromBg(colX: Int) -> Bool {
+            var differCount = 0
+            var totalCount = 0
+            var y = midY0
+            while y < midY1 {
+                let bg = rowOuterBg(y: y, leftX: found.localX, rightX: found.localX + found.barW - 1)
+                let c = rgb(pixels, stride: stripWidth, x: colX, y: y)
+                if colorDistance(c, bg) > 3.5 {
+                    differCount += 1
+                }
+                totalCount += 1
+                y += rowStep
+            }
+            return totalCount > 0 && Double(differCount) / Double(totalCount) >= 0.55
+        }
+
+        var expLeftX = found.localX
+        let maxExpandLeft = max(2, expLeftX - 6)
+        while expLeftX > maxExpandLeft && columnDiffersFromBg(colX: expLeftX - 1) {
+            expLeftX -= 1
+        }
+
+        var expRightX = found.localX + found.barW // exclusive
+        let maxExpandRight = min(stripWidth - 2, expRightX + 6)
+        while expRightX < maxExpandRight && columnDiffersFromBg(colX: expRightX) {
+            expRightX += 1
+        }
+
+        // Add 1px outer anti-aliasing / chroma-subsampling safety margin on each side.
+        expLeftX = max(1, expLeftX - 1)
+        expRightX = min(stripWidth - 1, expRightX + 1)
+
+        func rowHasCapPixels(y: Int) -> Bool {
+            guard y >= 0, y < h else { return false }
+            let lBg = rgb(pixels, stride: stripWidth, x: max(0, expLeftX - 4), y: y)
+            let rBg = rgb(pixels, stride: stripWidth, x: min(stripWidth - 1, expRightX + 3), y: y)
+            guard colorDistance(lBg, rBg) < 22.0 else { return false }
+            let bg = ((lBg.0 + rBg.0) * 0.5, (lBg.1 + rBg.1) * 0.5, (lBg.2 + rBg.2) * 0.5)
+            for x in expLeftX..<expRightX {
+                if colorDistance(rgb(pixels, stride: stripWidth, x: x, y: y), bg) > 4.0 {
+                    return true
+                }
+            }
+            return false
+        }
+
+        var expTopY = found.yStart
+        let topExpandLimit = max(0, found.yStart - 10)
+        while expTopY > topExpandLimit && rowHasCapPixels(y: expTopY - 1) {
+            expTopY -= 1
+        }
+
+        var expBotY = found.yEnd // inclusive
+        let botExpandLimit = min(h - 1, found.yEnd + 10)
+        while expBotY < botExpandLimit && rowHasCapPixels(y: expBotY + 1) {
+            expBotY += 1
+        }
+
+        // Expand 2px vertically beyond last visible cap pixels to erase faintest rounded corners cleanly.
+        expTopY = max(0, expTopY - 2)
+        expBotY = min(h - 1, expBotY + 2)
+
         let region = ScrollbarRegion(
-            x: stripX + found.localX,
-            y: found.yStart,
-            width: found.barW,
-            height: found.yEnd - found.yStart + 1,
-            leftPadding: 3,
-            rightPadding: 3
+            x: stripX + expLeftX,
+            y: expTopY,
+            width: max(1, expRightX - expLeftX),
+            height: max(1, expBotY - expTopY + 1),
+            leftPadding: 4,
+            rightPadding: 4
         )
         return [region]
     }
@@ -240,10 +327,10 @@ public final class ScrollbarProcessor {
             swap(&currentTex, &outTex)
         }
 
-        return cgImage(from: currentTex)
+        return cgImage(from: currentTex, colorSpace: image.colorSpace)
     }
 
-    private func cgImage(from texture: MTLTexture) -> CGImage? {
+    private func cgImage(from texture: MTLTexture, colorSpace: CGColorSpace?) -> CGImage? {
         let w = texture.width
         let h = texture.height
         let bytesPerRow = w * 4
@@ -259,7 +346,7 @@ public final class ScrollbarProcessor {
             bitmapInfo = CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue
         }
 
-        let cs = CGColorSpaceCreateDeviceRGB()
+        let cs = colorSpace ?? CGColorSpaceCreateDeviceRGB()
         guard let ctx = CGContext(
             data: &bytes,
             width: w,
@@ -279,7 +366,7 @@ public final class ScrollbarProcessor {
         let h = image.height
         let bytesPerRow = w * 4
         var bytes = [UInt8](repeating: 0, count: bytesPerRow * h)
-        let cs = CGColorSpaceCreateDeviceRGB()
+        let cs = image.colorSpace ?? CGColorSpaceCreateDeviceRGB()
         guard let ctx = CGContext(
             data: &bytes,
             width: w,
@@ -300,21 +387,53 @@ public final class ScrollbarProcessor {
             let maxY = min(h, reg.y + reg.height)
             guard minX < maxX, minY < maxY else { continue }
 
-            let leftX = max(0, minX - reg.leftPadding)
-            let rightX = min(w - 1, maxX + reg.rightPadding)
+            let leftCenter = max(0, minX - reg.leftPadding)
+            let rightCenter = min(w - 1, maxX + reg.rightPadding)
+            let l0 = max(0, min(max(0, minX - 1), leftCenter - 1))
+            let l1 = max(0, min(max(0, minX - 1), leftCenter))
+            let l2 = max(0, min(max(0, minX - 1), leftCenter + 1))
+
+            let rLo = min(maxX, w - 1)
+            let r0 = min(w - 1, max(rLo, rightCenter - 1))
+            let r1 = min(w - 1, max(rLo, rightCenter))
+            let r2 = min(w - 1, max(rLo, rightCenter + 1))
 
             for y in minY..<maxY {
                 let rowOff = y * bytesPerRow
-                let lOff = rowOff + leftX * 4
-                let rOff = rowOff + rightX * 4
+                let lv0 = Double(
+                    Int(bytes[rowOff + l0 * 4]) + Int(bytes[rowOff + l1 * 4]) + Int(bytes[rowOff + l2 * 4])
+                ) / 3.0
+                let lv1 = Double(
+                    Int(bytes[rowOff + l0 * 4 + 1]) + Int(bytes[rowOff + l1 * 4 + 1]) + Int(bytes[rowOff + l2 * 4 + 1])
+                ) / 3.0
+                let lv2 = Double(
+                    Int(bytes[rowOff + l0 * 4 + 2]) + Int(bytes[rowOff + l1 * 4 + 2]) + Int(bytes[rowOff + l2 * 4 + 2])
+                ) / 3.0
+                let lv3 = Double(
+                    Int(bytes[rowOff + l0 * 4 + 3]) + Int(bytes[rowOff + l1 * 4 + 3]) + Int(bytes[rowOff + l2 * 4 + 3])
+                ) / 3.0
+
+                let rv0 = Double(
+                    Int(bytes[rowOff + r0 * 4]) + Int(bytes[rowOff + r1 * 4]) + Int(bytes[rowOff + r2 * 4])
+                ) / 3.0
+                let rv1 = Double(
+                    Int(bytes[rowOff + r0 * 4 + 1]) + Int(bytes[rowOff + r1 * 4 + 1]) + Int(bytes[rowOff + r2 * 4 + 1])
+                ) / 3.0
+                let rv2 = Double(
+                    Int(bytes[rowOff + r0 * 4 + 2]) + Int(bytes[rowOff + r1 * 4 + 2]) + Int(bytes[rowOff + r2 * 4 + 2])
+                ) / 3.0
+                let rv3 = Double(
+                    Int(bytes[rowOff + r0 * 4 + 3]) + Int(bytes[rowOff + r1 * 4 + 3]) + Int(bytes[rowOff + r2 * 4 + 3])
+                ) / 3.0
+
                 for x in minX..<maxX {
                     let t = Double(x - minX + 1) / Double(max(1, (maxX - minX) + 1))
+                    let omt = 1.0 - t
                     let pOff = rowOff + x * 4
-                    for c in 0..<4 {
-                        let lv = Double(bytes[lOff + c])
-                        let rv = Double(bytes[rOff + c])
-                        bytes[pOff + c] = UInt8(max(0, min(255, (lv * (1.0 - t) + rv * t).rounded())))
-                    }
+                    bytes[pOff] = UInt8(max(0, min(255, (lv0 * omt + rv0 * t).rounded())))
+                    bytes[pOff + 1] = UInt8(max(0, min(255, (lv1 * omt + rv1 * t).rounded())))
+                    bytes[pOff + 2] = UInt8(max(0, min(255, (lv2 * omt + rv2 * t).rounded())))
+                    bytes[pOff + 3] = UInt8(max(0, min(255, (lv3 * omt + rv3 * t).rounded())))
                 }
             }
         }
