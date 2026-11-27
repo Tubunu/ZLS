@@ -1040,7 +1040,7 @@ public final class OverlapDetector: @unchecked Sendable {
 
             for y in 0..<topLimit {
                 let info = analyzeRow(topY: y, botY: y)
-                topVInfo[y] = (info.vCos, info.vEdge)
+                topVInfo[y] = (info.vCos, info.vEdgeCount)
                 if info.rawMismatch { mismatchCount += 1 }
                 if info.locked { lockedYs.append(y) }
             }
@@ -1100,7 +1100,7 @@ public final class OverlapDetector: @unchecked Sendable {
                 let tY = top.height - 1 - kFromBot
                 let bY = bottom.height - 1 - kFromBot
                 let info = analyzeRow(topY: tY, botY: bY)
-                botVInfo[i] = (info.vCos, info.vEdge)
+                botVInfo[i] = (info.vCos, info.vEdgeCount)
                 if info.rawMismatch { mismatchCount += 1 }
                 if info.locked { lockedIndices.append(i) }
             }
