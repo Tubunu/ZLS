@@ -191,42 +191,46 @@ public final class OverlapDetector: @unchecked Sendable {
         var candidates: [OverlapCandidate] = []
         candidates.reserveCapacity(64)
 
-        // 0. If caller provided an optical-tracking overlap hint (Video mode), probe that tight band first.
+        // 0. If caller provided an optical-tracking overlap hint (Video mode), fast-rank lags with row signatures,
+        // then run full-res verification only on top candidates around the hint.
         if let hintWork = expectedOverlapHint.map({ Int((Double($0) / max(botScaleY, 0.001)).rounded()) }),
            hintWork >= 16 {
             let lo = max(16, hintWork - searchRadius)
             let hi = min(usableMinH, hintWork + searchRadius)
             let lagBase = topWinEnd - botWinStart
-            var bestGuidedMatch: VerifiedOverlap?
-            // Coarse stride 2 then fine ±3 refinement around hint.
-            var ov = lo
-            while ov <= hi {
-                let lag = lagBase - ov
-                if let verified = verifyLag(
-                    lag: lag,
-                    top: topGray,
-                    bot: botGray,
-                    topSigs: topHashes,
-                    botSigs: botHashes,
-                    xStart: xStart,
-                    xEnd: xEnd,
-                    topWinStart: topWinStart,
-                    topWinEnd: topWinEnd,
-                    botWinStart: botWinStart,
-                    botWinEnd: botWinEnd,
-                    minOverlap: max(16, min(minOverlap, hintWork - 8)),
-                    maxOverlap: min(usableMinH, hintWork + searchRadius)
-                ) {
-                    if bestGuidedMatch == nil || verified.score > bestGuidedMatch!.score {
-                        bestGuidedMatch = verified
-                    }
+
+            var scoredOv: [(ov: Int, diff: Double)] = []
+            scoredOv.reserveCapacity(max(1, hi - lo + 1))
+            for ov in lo...hi {
+                let sTop = topWinEnd - ov
+                let sBot = botWinStart
+                let span = min(ov, min(topWinEnd - sTop, botWinEnd - sBot))
+                guard span >= 16 else { continue }
+                let rowStep = span > 240 ? 3 : 2
+                var err = 0.0
+                var cnt = 0
+                var k = 0
+                while k < span {
+                    let ts = topHashes.rows[sTop + k]
+                    let bs = botHashes.rows[sBot + k]
+                    err += Double(abs(Int(ts.mean) - Int(bs.mean)) + abs(Int(ts.edgeMean) - Int(bs.edgeMean)))
+                    cnt += 1
+                    k += rowStep
                 }
-                ov += 2
+                if cnt > 0 {
+                    scoredOv.append((ov, err / Double(cnt)))
+                }
             }
-            if let coarse = bestGuidedMatch {
-                for delta in -3...3 {
-                    if let fine = verifyLag(
-                        lag: coarse.lag + delta,
+            scoredOv.sort { $0.diff < $1.diff }
+
+            var testedHintLags = Set<Int>()
+            var bestGuidedMatch: VerifiedOverlap?
+            for item in scoredOv.prefix(8) {
+                for delta in -2...2 {
+                    let lag = lagBase - (item.ov + delta)
+                    if !testedHintLags.insert(lag).inserted { continue }
+                    if let verified = verifyLag(
+                        lag: lag,
                         top: topGray,
                         bot: botGray,
                         topSigs: topHashes,
@@ -237,11 +241,11 @@ public final class OverlapDetector: @unchecked Sendable {
                         topWinEnd: topWinEnd,
                         botWinStart: botWinStart,
                         botWinEnd: botWinEnd,
-                        minOverlap: 16,
-                        maxOverlap: usableMinH
+                        minOverlap: max(16, min(minOverlap, hintWork - 8)),
+                        maxOverlap: min(usableMinH, hintWork + searchRadius)
                     ) {
-                        if fine.score > bestGuidedMatch!.score {
-                            bestGuidedMatch = fine
+                        if bestGuidedMatch == nil || verified.score > bestGuidedMatch!.score {
+                            bestGuidedMatch = verified
                         }
                     }
                 }
@@ -251,13 +255,18 @@ public final class OverlapDetector: @unchecked Sendable {
                guided.confidence >= 0.45 {
                 return finalizeResult(
                     verified: guided,
+                    top: topGray,
+                    bot: botGray,
+                    xStart: xStart,
+                    xEnd: xEnd,
                     topH: topH,
                     origBotH: origBotH,
                     botScaleY: botScaleY,
+                    minBotExpandY: detectedChrome.headerCoreRows,
+                    maxTopExpandY: topH - detectedChrome.footerCoreRows,
                     headerRows: headerRows,
                     footerRows: footerRows,
-                    staticHeaderOrigBot: staticHeaderOrigBot,
-                    staticFooterOrigBot: staticFooterOrigBot
+                    staticHeaderOrigBot: staticHeaderOrigBot
                 )
             }
         }
@@ -349,13 +358,18 @@ public final class OverlapDetector: @unchecked Sendable {
            winner.overlapLen >= minOverlap {
             return finalizeResult(
                 verified: winner,
+                top: topGray,
+                bot: botGray,
+                xStart: xStart,
+                xEnd: xEnd,
                 topH: topH,
                 origBotH: origBotH,
                 botScaleY: botScaleY,
+                minBotExpandY: detectedChrome.headerCoreRows,
+                maxTopExpandY: topH - detectedChrome.footerCoreRows,
                 headerRows: headerRows,
                 footerRows: footerRows,
-                staticHeaderOrigBot: staticHeaderOrigBot,
-                staticFooterOrigBot: staticFooterOrigBot
+                staticHeaderOrigBot: staticHeaderOrigBot
             )
         }
 
@@ -371,33 +385,88 @@ public final class OverlapDetector: @unchecked Sendable {
 
     private func finalizeResult(
         verified: VerifiedOverlap,
+        top: GrayBitmap,
+        bot: GrayBitmap,
+        xStart: Int,
+        xEnd: Int,
         topH: Int,
         origBotH: Int,
         botScaleY: Double,
+        minBotExpandY: Int,
+        maxTopExpandY: Int,
         headerRows: Int,
         footerRows: Int,
-        staticHeaderOrigBot: Int,
-        staticFooterOrigBot: Int
+        staticHeaderOrigBot: Int
     ) -> OverlapResult {
-        // `verified.endTop` in `top` corresponds pixel-for-pixel to `verified.endBot` in `bot`.
-        // Cutting `top` right at `verified.endTop` and starting `bot` right at `verified.endBot`
-        // automatically skips any static header above `startBot` and any static footer below `endTop`
-        // while keeping row `endTop - 1` contiguous with row `endBot`.
-        let topCropBottom = max(0, topH - verified.endTop)
-        let scaledBotCropTop = min(origBotH - 1, max(0, Int((Double(verified.endBot) * botScaleY).rounded())))
-        let scaledOverlap = max(1, Int((Double(verified.overlapLen) * botScaleY).rounded()))
+        // Recover any post-divider / pre-divider blank margin rows that happen to match
+        // pixel-for-pixel at the winning scroll lag.
+        var expandedStartBot = verified.startBot
+        var expandedEndTop = verified.endTop
+        var expandedEndBot = verified.endBot
+        var expandedOverlap = verified.overlapLen
+        let lag = verified.lag
 
-        // Respect autoTrimStaticBars == false ONLY in keeping un-trimmed scroll content bounds, while still
-        // trimming the overlapping region cleanly. If `autoTrimStaticBars` is true, ensure static footer/header
-        // aren't left behind.
-        let finalTopCrop = config.autoTrimStaticBars ? max(footerRows, topCropBottom) : topCropBottom
-        let finalBotCrop = config.autoTrimStaticBars ? max(staticHeaderOrigBot, scaledBotCropTop) : scaledBotCropTop
+        let activeW = max(1, xEnd - xStart)
+        let colStep = max(1, activeW / 96)
+
+        func pairRowMatches(topY: Int, botY: Int) -> Bool {
+            guard topY >= 0, topY < top.height, botY >= 0, botY < bot.height else { return false }
+            let tBase = topY * top.width + xStart
+            let bBase = botY * bot.width + xStart
+            var count = 0
+            var close = 0
+            var inlierSum = 0
+            var inlierCount = 0
+            var x = 0
+            while x < activeW {
+                let d = abs(Int(top.pixels[tBase + x]) - Int(bot.pixels[bBase + x]))
+                if d <= 12 { close += 1 }
+                if d <= 30 {
+                    inlierSum += d
+                    inlierCount += 1
+                }
+                count += 1
+                x += colStep
+            }
+            let frac = Double(close) / Double(max(1, count))
+            let mad = inlierCount > 0 ? Double(inlierSum) / Double(inlierCount) : 255.0
+            return frac >= 0.88 && mad <= 9.0
+        }
+
+        let upFloor = max(0, max(minBotExpandY, expandedStartBot - 48))
+        var stepsUp = 0
+        while expandedStartBot > upFloor && stepsUp < 48 {
+            let nextBot = expandedStartBot - 1
+            let nextTop = nextBot + lag
+            guard pairRowMatches(topY: nextTop, botY: nextBot) else { break }
+            expandedStartBot = nextBot
+            expandedOverlap += 1
+            stepsUp += 1
+        }
+
+        let downCeiling = min(topH, min(maxTopExpandY, expandedEndTop + 48))
+        var stepsDown = 0
+        while expandedEndTop < downCeiling && expandedEndBot < bot.height && stepsDown < 48 {
+            let nextTop = expandedEndTop
+            let nextBot = expandedEndBot
+            guard pairRowMatches(topY: nextTop, botY: nextBot) else { break }
+            expandedEndTop += 1
+            expandedEndBot += 1
+            expandedOverlap += 1
+            stepsDown += 1
+        }
+
         _ = headerRows
-        _ = staticFooterOrigBot
+        _ = footerRows
+        _ = staticHeaderOrigBot
+
+        let topCropBottom = max(0, topH - expandedEndTop)
+        let scaledBotCropTop = min(origBotH - 1, max(0, Int((Double(expandedEndBot) * botScaleY).rounded())))
+        let scaledOverlap = max(1, Int((Double(expandedOverlap) * botScaleY).rounded()))
 
         return OverlapResult(
-            topCropBottom: finalTopCrop,
-            botCropTop: finalBotCrop,
+            topCropBottom: topCropBottom,
+            botCropTop: scaledBotCropTop,
             overlapPixels: scaledOverlap,
             confidence: verified.confidence,
             isMatched: true
@@ -484,6 +553,7 @@ public final class OverlapDetector: @unchecked Sendable {
             var result: [RowSig] = []
             result.reserveCapacity(bitmap.height)
 
+            var samples = [Int](repeating: 0, count: sampleCount)
             bitmap.pixels.withUnsafeBufferPointer { px in
                 let w = bitmap.width
                 for y in 0..<bitmap.height {
@@ -494,7 +564,6 @@ public final class OverlapDetector: @unchecked Sendable {
                     var diffSum = 0
                     var smallDiffs = 0
                     var prevV = Int(px[rowBase])
-                    var samples = [Int](repeating: 0, count: sampleCount)
 
                     var sIdx = 0
                     var x = 0
@@ -517,8 +586,6 @@ public final class OverlapDetector: @unchecked Sendable {
                     let count = max(1, sIdx)
                     let meanInt = sum / count
                     let rangeInt = maxV - minV
-                    let meanSigned = Int8(clamping: min(127, max(-128, meanInt - 128)))
-                    _ = meanSigned
 
                     var w0: UInt64 = 0
                     var w1: UInt64 = 0
@@ -562,6 +629,8 @@ public final class OverlapDetector: @unchecked Sendable {
     private struct StaticChrome {
         let headerRows: Int
         let footerRows: Int
+        let headerCoreRows: Int
+        let footerCoreRows: Int
     }
 
     private static func detectStaticChrome(
@@ -575,11 +644,12 @@ public final class OverlapDetector: @unchecked Sendable {
         let maxFooter = min(Int(Double(minH) * 0.22), max(0, minH - 64))
         let colStep = max(1, (xEnd - xStart) / 96)
 
-        func rowMatchesAt(_ topY: Int, _ botY: Int) -> (matches: Bool, textured: Bool, stepChange: Bool) {
+        func rowMatchesAt(_ topY: Int, _ botY: Int) -> (matches: Bool, textured: Bool, mean: Int) {
             let tBase = topY * top.width
             let bBase = botY * bottom.width
             var total = 0
             var close = 0
+            var sum = 0
             var minT = 255
             var maxT = 0
             var minB = 255
@@ -588,11 +658,12 @@ public final class OverlapDetector: @unchecked Sendable {
             while x < xEnd {
                 let tv = Int(top.pixels[tBase + x])
                 let bv = Int(bottom.pixels[bBase + x])
+                sum += (tv + bv) >> 1
                 if tv < minT { minT = tv }
                 if tv > maxT { maxT = tv }
                 if bv < minB { minB = bv }
                 if bv > maxB { maxB = bv }
-                if abs(tv - bv) <= 12 {
+                if abs(tv - bv) <= 10 {
                     close += 1
                 }
                 total += 1
@@ -600,56 +671,91 @@ public final class OverlapDetector: @unchecked Sendable {
             }
             let frac = total > 0 ? Double(close) / Double(total) : 0
             let textured = (maxT - minT) > 16 || (maxB - minB) > 16
-            return (frac >= 0.90, textured, false)
+            return (frac >= 0.96, textured, total > 0 ? sum / total : 0)
         }
 
-        // Top scan: tolerate clock / battery / Dynamic Island changes in top ~8.5% if a stable
-        // navigation bar continues immediately below.
+        func hasFullWidthStep(topY1: Int, topY2: Int, botY1: Int, botY2: Int) -> Bool {
+            guard topY1 >= 0, topY1 < top.height, topY2 >= 0, topY2 < top.height,
+                  botY1 >= 0, botY1 < bottom.height, botY2 >= 0, botY2 < bottom.height else {
+                return false
+            }
+            let tBase1 = topY1 * top.width
+            let tBase2 = topY2 * top.width
+            let bBase1 = botY1 * bottom.width
+            let bBase2 = botY2 * bottom.width
+            var total = 0
+            var bothStepped = 0
+            var x = xStart
+            while x < xEnd {
+                let dt = abs(Int(top.pixels[tBase1 + x]) - Int(top.pixels[tBase2 + x]))
+                let db = abs(Int(bottom.pixels[bBase1 + x]) - Int(bottom.pixels[bBase2 + x]))
+                if dt >= 18 && db >= 18 {
+                    bothStepped += 1
+                }
+                total += 1
+                x += colStep
+            }
+            return total > 0 && Double(bothStepped) / Double(total) >= 0.70
+        }
+
+        // Top scan: tolerate clock / battery / Dynamic Island changes ONLY in top ~9.5%, and ONLY bridge
+        // when structured static chrome (non-blank nav bar / icon / divider) resumes below the clock.
         let statusBandY = min(maxHeader, max(44, Int(Double(minH) * 0.095)))
-        let smallGap = max(10, Int(Double(minH) * 0.015))
         let clockGap = max(36, Int(Double(minH) * 0.055))
 
         var matchFlags = [Bool](repeating: false, count: maxHeader)
         var texFlags = [Bool](repeating: false, count: maxHeader)
+        var means = [Int](repeating: 0, count: maxHeader)
         for y in 0..<maxHeader {
             let r = rowMatchesAt(y, y)
             matchFlags[y] = r.matches
             texFlags[y] = r.textured
+            means[y] = r.mean
         }
 
         var headerRows = 0
+        var headerCoreRows = 0
         if maxHeader > 0 {
             var y = 0
             var lastMatchY = -1
+            var lastTexChromeY = -1
             var anyDiffInsideHeader = false
             var anyTexturedMatch = false
 
             while y < maxHeader {
                 if matchFlags[y] {
                     lastMatchY = y
-                    if texFlags[y] { anyTexturedMatch = true }
+                    if texFlags[y] {
+                        anyTexturedMatch = true
+                        lastTexChromeY = y
+                    }
                     y += 1
                 } else {
                     anyDiffInsideHeader = true
-                    // Only bridge a clock/island gap if static top bezel padding was already established from y = 0.
-                    guard lastMatchY >= 8 else { break }
-                    let bridge = (y < statusBandY) ? clockGap : smallGap
+                    guard lastMatchY >= 8, y < statusBandY else { break }
                     var resumeY: Int?
-                    var consec = 0
-                    let lookEnd = min(maxHeader, y + bridge + 20)
+                    var consecTex = 0
+                    var consecMatch = 0
+                    let lookEnd = min(maxHeader, y + clockGap + 40)
                     for k in y..<lookEnd {
                         if matchFlags[k] {
-                            consec += 1
-                            // Either a sustained matching band (>= 12 rows) or a matching textured chrome line
-                            if consec >= 12 || (consec >= 3 && texFlags[k]) {
-                                resumeY = k - consec + 1
+                            consecMatch += 1
+                            let isDividerStep = k > 0 && abs(means[k] - means[k - 1]) >= 10
+                            if texFlags[k] || isDividerStep { consecTex += 1 }
+                            if consecTex >= 2 && consecMatch >= 4 {
+                                var startRun = k
+                                while startRun > y && matchFlags[startRun - 1] {
+                                    startRun -= 1
+                                }
+                                resumeY = startRun
                                 break
                             }
                         } else {
-                            consec = 0
+                            consecTex = 0
+                            consecMatch = 0
                         }
                     }
-                    if let resume = resumeY, (resume - y) <= bridge {
+                    if let resume = resumeY, (resume - y) <= clockGap {
                         y = resume
                     } else {
                         break
@@ -658,12 +764,20 @@ public final class OverlapDetector: @unchecked Sendable {
             }
 
             if lastMatchY >= 0 {
+                let isBoundaryBar = hasFullWidthStep(
+                    topY1: lastMatchY,
+                    topY2: lastMatchY + 1,
+                    botY1: lastMatchY,
+                    botY2: lastMatchY + 1
+                )
                 let reachedLimitWithoutDiff = (!anyDiffInsideHeader && lastMatchY >= maxHeader - 2)
-                if reachedLimitWithoutDiff && !anyTexturedMatch {
-                    // Entire top 28% is completely blank uniform color — do not clip blank top padding.
+                if (!anyTexturedMatch && !isBoundaryBar) || (reachedLimitWithoutDiff && !anyTexturedMatch) {
                     headerRows = 0
+                    headerCoreRows = 0
                 } else {
                     headerRows = lastMatchY + 1
+                    let texFloor = (anyTexturedMatch && lastTexChromeY >= 0) ? (lastTexChromeY + 1) : 0
+                    headerCoreRows = max(texFloor, max(0, headerRows - 36))
                 }
             }
         }
@@ -678,37 +792,49 @@ public final class OverlapDetector: @unchecked Sendable {
         }
 
         var footerRows = 0
+        var footerCoreRows = 0
         if maxFooter > 0 {
             var k = 0
             var lastMatchK = -1
+            var lastTexChromeK = -1
             var anyDiffInsideFooter = false
             var anyTexturedMatch = false
             let homeBandK = min(maxFooter, max(36, Int(Double(minH) * 0.08)))
+            let homeGap = max(24, Int(Double(minH) * 0.03))
 
             while k < maxFooter {
                 if botMatchFlags[k] {
                     lastMatchK = k
-                    if botTexFlags[k] { anyTexturedMatch = true }
+                    if botTexFlags[k] {
+                        anyTexturedMatch = true
+                        lastTexChromeK = k
+                    }
                     k += 1
                 } else {
                     anyDiffInsideFooter = true
-                    guard lastMatchK >= 8 else { break }
-                    let bridge = (k < homeBandK) ? max(24, Int(Double(minH) * 0.03)) : smallGap
+                    guard lastMatchK >= 8, k < homeBandK else { break }
                     var resumeK: Int?
-                    var consec = 0
-                    let lookEnd = min(maxFooter, k + bridge + 16)
+                    var consecTex = 0
+                    var consecMatch = 0
+                    let lookEnd = min(maxFooter, k + homeGap + 30)
                     for m in k..<lookEnd {
                         if botMatchFlags[m] {
-                            consec += 1
-                            if consec >= 10 || (consec >= 3 && botTexFlags[m]) {
-                                resumeK = m - consec + 1
+                            consecMatch += 1
+                            if botTexFlags[m] { consecTex += 1 }
+                            if consecTex >= 3 && consecMatch >= 4 {
+                                var startRun = m
+                                while startRun > k && botMatchFlags[startRun - 1] {
+                                    startRun -= 1
+                                }
+                                resumeK = startRun
                                 break
                             }
                         } else {
-                            consec = 0
+                            consecTex = 0
+                            consecMatch = 0
                         }
                     }
-                    if let resume = resumeK, (resume - k) <= bridge {
+                    if let resume = resumeK, (resume - k) <= homeGap {
                         k = resume
                     } else {
                         break
@@ -717,16 +843,32 @@ public final class OverlapDetector: @unchecked Sendable {
             }
 
             if lastMatchK >= 0 {
+                let topEdgeY = top.height - 1 - lastMatchK
+                let botEdgeY = bottom.height - 1 - lastMatchK
+                let isBoundaryBar = hasFullWidthStep(
+                    topY1: topEdgeY,
+                    topY2: topEdgeY - 1,
+                    botY1: botEdgeY,
+                    botY2: botEdgeY - 1
+                )
                 let reachedLimitWithoutDiff = (!anyDiffInsideFooter && lastMatchK >= maxFooter - 2)
-                if reachedLimitWithoutDiff && !anyTexturedMatch {
+                if (!anyTexturedMatch && !isBoundaryBar) || (reachedLimitWithoutDiff && !anyTexturedMatch) {
                     footerRows = 0
+                    footerCoreRows = 0
                 } else {
                     footerRows = lastMatchK + 1
+                    let texCeilK = (anyTexturedMatch && lastTexChromeK >= 0) ? (lastTexChromeK + 1) : 0
+                    footerCoreRows = max(texCeilK, max(0, footerRows - 36))
                 }
             }
         }
 
-        return StaticChrome(headerRows: headerRows, footerRows: footerRows)
+        return StaticChrome(
+            headerRows: headerRows,
+            footerRows: footerRows,
+            headerCoreRows: headerCoreRows,
+            footerCoreRows: footerCoreRows
+        )
     }
 
     // MARK: - Candidate Generation 1: Bit-Hash 2D Rolling DP (PixelHashMerger)
@@ -1183,11 +1325,7 @@ public final class OverlapDetector: @unchecked Sendable {
 
         let activeW = max(1, xEnd - xStart)
         let colStep = max(1, activeW / 96)
-        let numCols = max(1, (activeW + colStep - 1) / colStep)
-        // Trimmed 85% keeps immunity against floating corner action buttons / overlay pills.
-        let keepCols = max(1, Int((Double(numCols) * 0.85).rounded(.down)))
 
-        var diffs = [Int](repeating: 0, count: numCols)
         var rowMatches = [Bool](repeating: false, count: span)
         var rowMADs = [Double](repeating: 255.0, count: span)
 
@@ -1203,33 +1341,38 @@ public final class OverlapDetector: @unchecked Sendable {
 
                     var cIdx = 0
                     var close = 0
+                    var inlierSum = 0
+                    var inlierCount = 0
+                    var totalCappedSum = 0
                     var x = 0
-                    while x < activeW && cIdx < numCols {
+                    while x < activeW {
                         let d = abs(Int(tPx[tBase + x]) - Int(bPx[bBase + x]))
-                        diffs[cIdx] = d
+                        totalCappedSum += min(d, 36)
                         if d <= 14 { close += 1 }
+                        if d <= 36 {
+                            inlierSum += d
+                            inlierCount += 1
+                        }
                         cIdx += 1
                         x += colStep
                     }
 
-                    let goodFrac = Double(close) / Double(max(1, cIdx))
+                    let denom = Double(max(1, cIdx))
+                    let goodFrac = Double(close) / denom
                     if goodFrac < 0.72 {
                         rowMatches[k] = false
                         continue
                     }
 
-                    if cIdx > keepCols {
-                        diffs[0..<cIdx].sort()
-                    }
-                    let used = min(keepCols, cIdx)
-                    var sum = 0
-                    for i in 0..<used { sum += diffs[i] }
-                    let trimmedMAD = Double(sum) / Double(max(1, used))
+                    let inlierFrac = Double(inlierCount) / denom
+                    let robustMAD = inlierFrac >= 0.80
+                        ? Double(inlierSum) / Double(max(1, inlierCount))
+                        : Double(totalCappedSum) / denom
 
-                    let acceptable = (trimmedMAD <= 14.0 && goodFrac >= 0.78)
-                        || (trimmedMAD <= 6.5 && goodFrac >= 0.74)
+                    let acceptable = (robustMAD <= 14.0 && goodFrac >= 0.78)
+                        || (robustMAD <= 6.5 && goodFrac >= 0.74)
                     rowMatches[k] = acceptable
-                    rowMADs[k] = trimmedMAD
+                    rowMADs[k] = robustMAD
                 }
             }
         }
