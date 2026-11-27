@@ -26,70 +26,101 @@ public struct ScrollbarDetector {
         // Stage A: Locate vertical scrollbar core capsule using outer background sampling
         // (far enough outside the capsule so anti-aliased edge shoulders don't pollute background).
         var bestSpan: (localX: Int, barW: Int, yStart: Int, yEnd: Int, score: Double)?
+        let yStep = h > 300 ? 2 : 1
+        let sampleRows = (h + yStep - 1) / yStep
+        let minSampleRun = max(12, minBarHeight / yStep)
+        var activeMask = [Bool](repeating: false, count: sampleRows)
 
-        for candW in minBarWidth...maxBarWidth {
-            for lx in stride(from: stripWidth - candW - 6, through: 6, by: -1) {
-                var activeMask = [Bool](repeating: false, count: h)
-
-                for y in 0..<h {
+        pixels.withUnsafeBufferPointer { px in
+            let rowStride = stripWidth * 4
+            for candW in minBarWidth...maxBarWidth {
+                for lx in stride(from: stripWidth - candW - 6, through: 6, by: -1) {
                     let leftSampleX = max(0, lx - 6)
                     let rightSampleX = min(stripWidth - 1, lx + candW + 5)
-                    let lRGB = rgb(pixels, stride: stripWidth, x: leftSampleX, y: y)
-                    let rRGB = rgb(pixels, stride: stripWidth, x: rightSampleX, y: y)
+                    let midOffX = (lx + candW / 2) * 4
+                    let leftOffX = leftSampleX * 4
+                    let rightOffX = rightSampleX * 4
+                    let lxOffX = lx * 4
 
-                    // Left and right background around the scrollbar should agree closely.
-                    let bgDiff = colorDistance(lRGB, rRGB)
-                    guard bgDiff < 20.0 else { continue }
+                    for si in 0..<sampleRows {
+                        let y = si * yStep
+                        let rowBase = y * rowStride
 
-                    var maxInternalSpread = 0.0
-                    let firstIn = rgb(pixels, stride: stripWidth, x: lx + candW / 2, y: y)
+                        let lr = Int(px[rowBase + leftOffX])
+                        let lg = Int(px[rowBase + leftOffX + 1])
+                        let lb = Int(px[rowBase + leftOffX + 2])
+                        let rr = Int(px[rowBase + rightOffX])
+                        let rg = Int(px[rowBase + rightOffX + 1])
+                        let rb = Int(px[rowBase + rightOffX + 2])
 
-                    for dx in 0..<candW {
-                        let c = rgb(pixels, stride: stripWidth, x: lx + dx, y: y)
-                        maxInternalSpread = max(maxInternalSpread, colorDistance(c, firstIn))
-                    }
-                    let bgAvg = (
-                        (lRGB.0 + rRGB.0) * 0.5,
-                        (lRGB.1 + rRGB.1) * 0.5,
-                        (lRGB.2 + rRGB.2) * 0.5
-                    )
-                    let minInteriorDiff = colorDistance(firstIn, bgAvg)
-
-                    if maxInternalSpread < 28.0 && minInteriorDiff > 14.0 {
-                        activeMask[y] = true
-                    }
-                }
-
-                // Extract longest contiguous run (allowing up to 3px horizontal-divider / cap gaps).
-                var y = 0
-                while y < h {
-                    if !activeMask[y] {
-                        y += 1
-                        continue
-                    }
-                    let start = y
-                    var end = y
-                    var gap = 0
-                    while end + 1 < h {
-                        if activeMask[end + 1] {
-                            end += 1
-                            gap = 0
-                        } else if gap < 3 && end + 2 < h && activeMask[end + 2] {
-                            gap += 1
-                            end += 1
-                        } else {
-                            break
+                        // colorDistance(l, r) < 20.0 <=> sum < 60
+                        if abs(lr - rr) + abs(lg - rg) + abs(lb - rb) >= 60 {
+                            activeMask[si] = false
+                            continue
                         }
-                    }
-                    let runLen = end - start + 1
-                    if runLen >= minBarHeight {
-                        // Prefer wider full core capsules over narrow 3px slices inside the capsule.
-                        let score = Double(runLen) + Double(candW) * 4.0
-                        if bestSpan == nil || score > bestSpan!.score {
-                            bestSpan = (lx, candW, start, end, score)
+
+                        let mr = Int(px[rowBase + midOffX])
+                        let mg = Int(px[rowBase + midOffX + 1])
+                        let mb = Int(px[rowBase + midOffX + 2])
+
+                        // colorDistance(mid, (l + r) * 0.5) > 14.0 <=> |2*m - (l+r)| > 84
+                        let bgDiffSum2 = abs(mr * 2 - (lr + rr))
+                            + abs(mg * 2 - (lg + rg))
+                            + abs(mb * 2 - (lb + rb))
+                        if bgDiffSum2 <= 84 {
+                            activeMask[si] = false
+                            continue
                         }
+
+                        var uniform = true
+                        var dxOff = rowBase + lxOffX
+                        for _ in 0..<candW {
+                            let dr = abs(Int(px[dxOff]) - mr)
+                            let dg = abs(Int(px[dxOff + 1]) - mg)
+                            let db = abs(Int(px[dxOff + 2]) - mb)
+                            // colorDistance < 28.0 <=> sum < 84
+                            if dr + dg + db >= 84 {
+                                uniform = false
+                                break
+                            }
+                            dxOff += 4
+                        }
+                        activeMask[si] = uniform
                     }
-                    y = end + 1
+
+                    // Extract longest contiguous run (allowing up to 3px horizontal-divider / cap gaps).
+                    var si = 0
+                    while si < sampleRows {
+                        if !activeMask[si] {
+                            si += 1
+                            continue
+                        }
+                        let start = si
+                        var end = si
+                        var gap = 0
+                        while end + 1 < sampleRows {
+                            if activeMask[end + 1] {
+                                end += 1
+                                gap = 0
+                            } else if gap < 2 && end + 2 < sampleRows && activeMask[end + 2] {
+                                gap += 1
+                                end += 1
+                            } else {
+                                break
+                            }
+                        }
+                        let sampleRunLen = end - start + 1
+                        if sampleRunLen >= minSampleRun {
+                            let yStart = start * yStep
+                            let yEnd = min(h - 1, end * yStep + (yStep - 1))
+                            let runLen = yEnd - yStart + 1
+                            let score = Double(runLen) + Double(candW) * 4.0
+                            if bestSpan == nil || score > bestSpan!.score {
+                                bestSpan = (lx, candW, yStart, yEnd, score)
+                            }
+                        }
+                        si = end + 1
+                    }
                 }
             }
         }

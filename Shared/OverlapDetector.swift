@@ -1021,7 +1021,9 @@ public final class OverlapDetector: @unchecked Sendable {
                 }
             }
 
-            let locked = (hCos >= 0.72 && hEdge >= 6) || (vCos >= 0.78 && vEdge >= 12)
+            // Require genuine horizontal glyph/icon edge structure (`hCos >= 0.72 && hEdge >= 6`)
+            // rather than uniform solid bars with only 2 horizontal edges (synthetic dividers).
+            let locked = hCos >= 0.72 && hEdge >= 6
             let rawMismatch = Double(closePx) / Double(n) < 0.94
             return (locked, vCos, vEdge, rawMismatch)
         }
