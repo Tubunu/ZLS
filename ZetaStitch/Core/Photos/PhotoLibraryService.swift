@@ -281,7 +281,7 @@ public final class PhotoLibraryService: NSObject, ObservableObject, PHPhotoLibra
     }
 }
 
-private extension UIImage {
+extension UIImage {
     func normalizedCGImage() -> CGImage? {
         guard imageOrientation != .up else { return cgImage }
         let format = UIGraphicsImageRendererFormat.default()

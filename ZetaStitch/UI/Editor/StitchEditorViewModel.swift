@@ -66,13 +66,8 @@ public final class StitchEditorViewModel: ObservableObject {
         guard isAnalyzing else { return }
 
         if let provided = draft.initialSeams {
-            let (_, scrollbars) = await engine.buildInitialPlan(
-                images: draft.images,
-                mode: .vertical,
-                autoTrimStaticBars: autoTrimStaticBars
-            )
             self.seams = provided
-            self.detectedScrollbars = scrollbars
+            self.detectedScrollbars = await engine.detectScrollbars(in: draft.images)
         } else {
             let (computedSeams, scrollbars) = await engine.buildInitialPlan(
                 images: draft.images,

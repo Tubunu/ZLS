@@ -568,7 +568,7 @@ public struct HomeView: View {
         for item in items {
             if let data = try? await item.loadTransferable(type: Data.self),
                let uiImage = UIImage(data: data),
-               let cg = uiImage.cgImage {
+               let cg = uiImage.normalizedCGImage() {
                 loaded.append(cg)
             }
         }

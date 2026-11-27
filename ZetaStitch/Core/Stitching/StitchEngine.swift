@@ -31,17 +31,9 @@ public final class StitchEngine {
         self.scrollbarProcessor = scrollbarProcessor
     }
 
-    public func buildInitialPlan(
-        images: [CGImage],
-        mode: StitchMode,
-        autoTrimStaticBars: Bool
-    ) async -> (seams: [StitchSeam], scrollbars: [[ScrollbarRegion]]) {
-        guard images.count >= 1 else { return ([], []) }
-
-        let detectorConfig = OverlapDetectionConfig(autoTrimStaticBars: autoTrimStaticBars)
-        let localDetector = OverlapDetector(config: detectorConfig)
-
-        async let scrollbarsTask: [[ScrollbarRegion]] = withTaskGroup(of: (Int, [ScrollbarRegion]).self) { group in
+    public func detectScrollbars(in images: [CGImage]) async -> [[ScrollbarRegion]] {
+        guard !images.isEmpty else { return [] }
+        return await withTaskGroup(of: (Int, [ScrollbarRegion]).self) { group in
             for (idx, img) in images.enumerated() {
                 group.addTask {
                     (idx, ScrollbarDetector.detectScrollbars(in: img))
@@ -53,6 +45,19 @@ public final class StitchEngine {
             }
             return result
         }
+    }
+
+    public func buildInitialPlan(
+        images: [CGImage],
+        mode: StitchMode,
+        autoTrimStaticBars: Bool
+    ) async -> (seams: [StitchSeam], scrollbars: [[ScrollbarRegion]]) {
+        guard images.count >= 1 else { return ([], []) }
+
+        let detectorConfig = OverlapDetectionConfig(autoTrimStaticBars: autoTrimStaticBars)
+        let localDetector = OverlapDetector(config: detectorConfig)
+
+        async let scrollbarsTask = detectScrollbars(in: images)
 
         if images.count == 1 {
             let sb = await scrollbarsTask

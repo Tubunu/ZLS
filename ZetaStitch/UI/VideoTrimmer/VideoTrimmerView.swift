@@ -293,7 +293,7 @@ public struct VideoTrimmerView: View {
 
         Task {
             do {
-                let keyframes = try await VideoStitcher.extractKeyframes(
+                let result = try await VideoStitcher.extractStitchResult(
                     from: draft.asset,
                     timeRange: range
                 ) { prog in
@@ -304,16 +304,17 @@ public struct VideoTrimmerView: View {
 
                 await MainActor.run {
                     isExtracting = false
-                    guard !keyframes.isEmpty else {
+                    guard !result.images.isEmpty else {
                         appState.errorAlertMessage = NSLocalizedString("video_trimmer.error.no_frames", comment: "")
                         return
                     }
                     let assets = draft.sourcePhotoAsset.map { [$0] } ?? []
                     let editorDraft = StitchDraft(
                         mode: .longStitch,
-                        images: keyframes,
+                        images: result.images,
                         sourceAssets: assets,
-                        sourceRecordingID: draft.sourceRecordingID
+                        sourceRecordingID: draft.sourceRecordingID,
+                        initialSeams: result.seams
                     )
                     appState.navigationPath.append(.editor(editorDraft))
                 }
