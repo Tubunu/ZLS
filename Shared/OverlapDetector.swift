@@ -433,9 +433,9 @@ public final class OverlapDetector: @unchecked Sendable {
             return frac >= 0.88 && mad <= 9.0
         }
 
-        let upFloor = max(0, max(minBotExpandY, expandedStartBot - 48))
+        let upFloor = max(0, max(minBotExpandY, expandedStartBot - 128))
         var stepsUp = 0
-        while expandedStartBot > upFloor && stepsUp < 48 {
+        while expandedStartBot > upFloor && stepsUp < 128 {
             let nextBot = expandedStartBot - 1
             let nextTop = nextBot + lag
             guard pairRowMatches(topY: nextTop, botY: nextBot) else { break }
@@ -444,9 +444,9 @@ public final class OverlapDetector: @unchecked Sendable {
             stepsUp += 1
         }
 
-        let downCeiling = min(topH, min(maxTopExpandY, expandedEndTop + 48))
+        let downCeiling = min(topH, min(maxTopExpandY, expandedEndTop + 128))
         var stepsDown = 0
-        while expandedEndTop < downCeiling && expandedEndBot < bot.height && stepsDown < 48 {
+        while expandedEndTop < downCeiling && expandedEndBot < bot.height && stepsDown < 128 {
             let nextTop = expandedEndTop
             let nextBot = expandedEndBot
             guard pairRowMatches(topY: nextTop, botY: nextBot) else { break }
@@ -721,6 +721,7 @@ public final class OverlapDetector: @unchecked Sendable {
             var lastTexChromeY = -1
             var anyDiffInsideHeader = false
             var anyTexturedMatch = false
+            var anyDividerInChrome = false
 
             while y < maxHeader {
                 if matchFlags[y] {
@@ -728,6 +729,8 @@ public final class OverlapDetector: @unchecked Sendable {
                     if texFlags[y] {
                         anyTexturedMatch = true
                         lastTexChromeY = y
+                    } else if y > 0 && matchFlags[y - 1] && abs(means[y] - means[y - 1]) >= 12 {
+                        anyDividerInChrome = true
                     }
                     y += 1
                 } else {
@@ -758,6 +761,7 @@ public final class OverlapDetector: @unchecked Sendable {
                         }
                     }
                     if let resume = resumeY, (resume - y) <= clockGap {
+                        anyDividerInChrome = true
                         y = resume
                     } else {
                         break
@@ -773,13 +777,12 @@ public final class OverlapDetector: @unchecked Sendable {
                     botY2: lastMatchY + 1
                 )
                 let reachedLimitWithoutDiff = (!anyDiffInsideHeader && lastMatchY >= maxHeader - 2)
-                if (!anyTexturedMatch && !isBoundaryBar) || (reachedLimitWithoutDiff && !anyTexturedMatch) {
+                if (!anyTexturedMatch && !anyDividerInChrome && !isBoundaryBar) || (reachedLimitWithoutDiff && !anyTexturedMatch) {
                     headerRows = 0
                     headerCoreRows = 0
                 } else {
                     headerRows = lastMatchY + 1
-                    let texFloor = (anyTexturedMatch && lastTexChromeY >= 0) ? (lastTexChromeY + 1) : 0
-                    headerCoreRows = max(texFloor, max(0, headerRows - 36))
+                    headerCoreRows = (anyTexturedMatch && lastTexChromeY >= 0) ? (lastTexChromeY + 1) : 0
                 }
             }
         }
@@ -787,10 +790,12 @@ public final class OverlapDetector: @unchecked Sendable {
         // Bottom scan: symmetric from bottom edge upward.
         var botMatchFlags = [Bool](repeating: false, count: maxFooter)
         var botTexFlags = [Bool](repeating: false, count: maxFooter)
+        var botMeans = [Int](repeating: 0, count: maxFooter)
         for k in 0..<maxFooter {
             let r = rowMatchesAt(top.height - 1 - k, bottom.height - 1 - k)
             botMatchFlags[k] = r.matches
             botTexFlags[k] = r.textured
+            botMeans[k] = r.mean
         }
 
         var footerRows = 0
@@ -801,6 +806,7 @@ public final class OverlapDetector: @unchecked Sendable {
             var lastTexChromeK = -1
             var anyDiffInsideFooter = false
             var anyTexturedMatch = false
+            var anyDividerInChrome = false
             let homeBandK = min(maxFooter, max(36, Int(Double(minH) * 0.08)))
             let homeGap = max(24, Int(Double(minH) * 0.03))
 
@@ -810,6 +816,8 @@ public final class OverlapDetector: @unchecked Sendable {
                     if botTexFlags[k] {
                         anyTexturedMatch = true
                         lastTexChromeK = k
+                    } else if k > 0 && botMatchFlags[k - 1] && abs(botMeans[k] - botMeans[k - 1]) >= 12 {
+                        anyDividerInChrome = true
                     }
                     k += 1
                 } else {
@@ -818,12 +826,15 @@ public final class OverlapDetector: @unchecked Sendable {
                     var resumeK: Int?
                     var consecTex = 0
                     var consecMatch = 0
+                    let preGapMean = botMeans[lastMatchK]
                     let lookEnd = min(maxFooter, k + homeGap + 30)
                     for m in k..<lookEnd {
                         if botMatchFlags[m] {
                             consecMatch += 1
-                            if botTexFlags[m] { consecTex += 1 }
-                            if consecTex >= 3 && consecMatch >= 4 {
+                            let isDividerStep = abs(botMeans[m] - preGapMean) >= 10
+                                || (m > 0 && abs(botMeans[m] - botMeans[m - 1]) >= 10)
+                            if botTexFlags[m] || isDividerStep { consecTex += 1 }
+                            if consecTex >= 2 && consecMatch >= 4 {
                                 var startRun = m
                                 while startRun > k && botMatchFlags[startRun - 1] {
                                     startRun -= 1
@@ -837,6 +848,7 @@ public final class OverlapDetector: @unchecked Sendable {
                         }
                     }
                     if let resume = resumeK, (resume - k) <= homeGap {
+                        anyDividerInChrome = true
                         k = resume
                     } else {
                         break
@@ -854,13 +866,12 @@ public final class OverlapDetector: @unchecked Sendable {
                     botY2: botEdgeY - 1
                 )
                 let reachedLimitWithoutDiff = (!anyDiffInsideFooter && lastMatchK >= maxFooter - 2)
-                if (!anyTexturedMatch && !isBoundaryBar) || (reachedLimitWithoutDiff && !anyTexturedMatch) {
+                if (!anyTexturedMatch && !anyDividerInChrome && !isBoundaryBar) || (reachedLimitWithoutDiff && !anyTexturedMatch) {
                     footerRows = 0
                     footerCoreRows = 0
                 } else {
                     footerRows = lastMatchK + 1
-                    let texCeilK = (anyTexturedMatch && lastTexChromeK >= 0) ? (lastTexChromeK + 1) : 0
-                    footerCoreRows = max(texCeilK, max(0, footerRows - 36))
+                    footerCoreRows = (anyTexturedMatch && lastTexChromeK >= 0) ? (lastTexChromeK + 1) : 0
                 }
             }
         }
@@ -1416,7 +1427,7 @@ public final class OverlapDetector: @unchecked Sendable {
                 missStreak = 0
             } else if curStart != -1 {
                 missStreak += 1
-                if missStreak > 3 {
+                if missStreak > 1 {
                     let len = lastGood - curStart + 1
                     if len > bestLen {
                         bestLen = len

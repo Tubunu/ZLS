@@ -603,9 +603,10 @@ final class ZetaStitchTests: XCTestCase {
         let detector = OverlapDetector(config: OverlapDetectionConfig(autoTrimStaticBars: true))
         let res = detector.detectVerticalOverlap(topImage: topImg, bottomImage: botImg)
         XCTAssertTrue(res.isMatched)
-        XCTAssertLessThanOrEqual(abs(res.overlapPixels - overlap), 4)
-        XCTAssertLessThanOrEqual(abs(res.topCropBottom - footerH), 4)
-        XCTAssertLessThanOrEqual(abs(res.botCropTop - (headerH + overlap)), 4)
+        let diag = "overlap=\(res.overlapPixels) topCrop=\(res.topCropBottom) botCrop=\(res.botCropTop) conf=\(res.confidence)"
+        XCTAssertLessThanOrEqual(abs(res.overlapPixels - overlap), 4, diag)
+        XCTAssertLessThanOrEqual(abs(res.topCropBottom - footerH), 4, diag)
+        XCTAssertLessThanOrEqual(abs(res.botCropTop - (headerH + overlap)), 4, diag)
     }
 
     private func writeSyntheticScrollVideo(
